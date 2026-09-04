@@ -2209,9 +2209,10 @@ class _ControllerPageState extends State<ControllerPage> {
       _tickerChip('9V', 'BOOST', Colors.amberAccent),
       _tickerChip('12V', 'TURBO', Colors.purpleAccent),
       _tickerChip('15V', 'OVERDRIVE', Colors.redAccent),
-      _tickerName('🅵🆈🆉 "フランキー"'),
+      _tickerName('VLADIMIR PUTIN'),
       _tickerName('FERN'),
       _tickerName('CHODOX'),
+      _tickerName('🅵🆈🆉 "フランキー"'),
     ];
     return Row(mainAxisSize: MainAxisSize.min, children: [
       for (int i = 0; i < items.length; i++) ...[
