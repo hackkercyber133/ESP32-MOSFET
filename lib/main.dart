@@ -284,7 +284,7 @@ class _SplashScreenState extends State<SplashScreen> with TickerProviderStateMix
                             ).createShader(bounds);
                           },
                           child: const Text(
-                            'VLADIMIR PUTIN',
+                            '🅵🆈🆉 "フランキー"',
                             style: TextStyle(
                               fontSize: 26,
                               fontWeight: FontWeight.w900,
@@ -2040,7 +2040,7 @@ class _ControllerPageState extends State<ControllerPage> {
             _drawerSectionTitle("Developer"),
             ListTile(
               leading: Icon(Icons.code_rounded, color: AppColors.textFaint(isDark)),
-              title: Text("VLADIMIR PUTIN", style: TextStyle(color: AppColors.text(isDark), fontWeight: FontWeight.w700)),
+              title: Text('🅵🆈🆉 "フランキー"', style: TextStyle(color: AppColors.text(isDark), fontWeight: FontWeight.w700)),
               subtitle: Text("Developer aplikasi & firmware", style: TextStyle(color: AppColors.textFaint(isDark), fontSize: 11)),
             ),
             ListTile(
@@ -2118,7 +2118,7 @@ class _ControllerPageState extends State<ControllerPage> {
           ),
           const SizedBox(width: 10),
           Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            const _ShimmerTitle(text: 'VLADIMIR PUTIN'),
+            const _ShimmerTitle(text: '🅵🆈🆉 "フランキー"'),
             Text('GAMING CONTROL • 2026', style: TextStyle(color: AppColors.textFaint(isDark), fontSize: 8, letterSpacing: 1.4)),
           ]),
         ]),
@@ -2209,7 +2209,7 @@ class _ControllerPageState extends State<ControllerPage> {
       _tickerChip('9V', 'BOOST', Colors.amberAccent),
       _tickerChip('12V', 'TURBO', Colors.purpleAccent),
       _tickerChip('15V', 'OVERDRIVE', Colors.redAccent),
-      _tickerName('VLADIMIR PUTIN'),
+      _tickerName('🅵🆈🆉 "フランキー"'),
       _tickerName('FERN'),
       _tickerName('CHODOX'),
     ];
