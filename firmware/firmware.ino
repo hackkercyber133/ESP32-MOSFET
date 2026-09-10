@@ -271,11 +271,6 @@ bool i2cDeviceAcks(uint8_t addr) {
   return Wire.endTransmission() == 0;
 }
 
-// Deteksi CH224A: begin() bawaan library kadang gagal walau chip sebenarnya
-// hidup & bisa nerima perintah (PG pin belum stabil pas boot, dll). Jadi kita
-// cek dulu chip-nya benar2 ACK di bus I2C secara langsung - kalau ACK, anggap
-// chip ADA (ch224aReady = true) meskipun begin() bawaan sempat gagal, supaya
-// status di app tidak salah lapor "offline" padahal chip-nya hidup.
 bool ch224Begin() {
   if (CH224X1 != nullptr) {
     delete CH224X1;
@@ -286,7 +281,7 @@ bool ch224Begin() {
                : i2cDeviceAcks(CH224_ADDR_SECONDARY) ? CH224_ADDR_SECONDARY
                : 0;
 
-  if (addr == 0) return false; // benar2 tidak ada device di kedua alamat
+  if (addr == 0) return false; 
 
   CH224X1 = new CH224X_I2C(Wire, addr, PG_PIN);
   ch224Addr = addr;
@@ -294,7 +289,7 @@ bool ch224Begin() {
   if (!beginOk) {
     Serial.println("CH224A ACK di I2C tapi begin() library gagal - tetap dipakai (kemungkinan PG pin belum stabil).");
   }
-  return true; // chip terbukti ACK di bus, anggap siap dipakai
+  return true; 
 }
 
 void scanI2CBus() {
@@ -529,8 +524,7 @@ void handleLedAnimation() {
     bouncePos += bounceDir;
     if (bouncePos >= NUM_LEDS - 1 || bouncePos <= 0) bounceDir = -bounceDir;
   } else if (ledMode == "knight") {
-    // Knight Rider klasik: satu mata merah bolak-balik dengan ekor pudar,
-    // sisanya gelap total (bukan pelangi kayak "bounce").
+  	
     if (millis() - lastLedStep < 30) return;
     lastLedStep = millis();
     strip.clear();
@@ -546,8 +540,7 @@ void handleLedAnimation() {
     bouncePos += bounceDir;
     if (bouncePos >= NUM_LEDS - 1 || bouncePos <= 0) bounceDir = -bounceDir;
   } else if (ledMode == "fire") {
-    // Api berkedip: tiap pixel dapat warna oranye-kuning acak yang beda
-    // tiap frame, mensimulasikan kobaran api.
+
     if (millis() - lastLedStep < 60) return;
     lastLedStep = millis();
     for (int i = 0; i < NUM_LEDS; i++) {
@@ -558,8 +551,7 @@ void handleLedAnimation() {
     }
     strip.show();
   } else if (ledMode == "chase") {
-    // Satu titik warna solid berjalan satu arah terus-menerus (bukan
-    // bolak-balik seperti knight/bounce), sisanya gelap.
+    
     if (millis() - lastLedStep < 40) return;
     lastLedStep = millis();
     strip.clear();
@@ -567,20 +559,17 @@ void handleLedAnimation() {
     strip.show();
     bouncePos = (bouncePos + 1) % NUM_LEDS;
   } else if (ledMode == "colorwave") {
-    // Mirip "Colorwaves" WLED: gelombang warna yang mengalir & berdenyut,
-    // blend antara 2 warna dengan lembah gelap di antaranya (bukan pelangi
-    // penuh, cuma 2 warna utama + hitam natural di titik terendah gelombang).
+    
     if (millis() - lastLedStep < 30) return;
     lastLedStep = millis();
     colorwavePhase += 0.06;
 
-    // Default warna meniru preset: putih-lavender & merah.
     const uint8_t aR = 243, aG = 237, aB = 255;
     const uint8_t bR = 255, bG = 0,   bB = 0;
 
     for (int i = 0; i < NUM_LEDS; i++) {
-      float wave = (sinf(i * 0.35f + colorwavePhase) + 1.0f) / 2.0f;        // 0..1, bikin lembah gelap
-      float blend = (sinf(i * 0.18f + colorwavePhase * 0.6f) + 1.0f) / 2.0f; // 0..1, campuran warna A/B lebih lambat
+      float wave = (sinf(i * 0.35f + colorwavePhase) + 1.0f) / 2.0f;        
+      float blend = (sinf(i * 0.18f + colorwavePhase * 0.6f) + 1.0f) / 2.0f; 
       uint8_t r = (uint8_t)((aR * (1.0f - blend) + bR * blend) * wave);
       uint8_t g = (uint8_t)((aG * (1.0f - blend) + bG * blend) * wave);
       uint8_t b = (uint8_t)((aB * (1.0f - blend) + bB * blend) * wave);
@@ -588,6 +577,7 @@ void handleLedAnimation() {
     }
     strip.show();
   }
+}
 
 String buildStatusJson(bool includeSecret) {
   unsigned long runtime = millis() - startMillis;
@@ -1032,11 +1022,6 @@ void startBleMode() {
   Serial.println("Menginisialisasi Bluetooth (NimBLE)...");
 
   NimBLEDevice::init(bleName.c_str());
-
-  // JSON status ~230+ byte (banyak field), sedangkan MTU default BLE cuma
-  // 23 byte. Kalau tidak diperbesar di sisi server juga, notify() bisa
-  // terpotong -> deserializeJson() di app gagal parse -> tampilan (voltase,
-  // status PD, dll) jadi tidak pernah ter-update walau hardware sudah benar.
   NimBLEDevice::setMTU(247);
 
   NimBLEDevice::setSecurityAuth(true, false, true);
@@ -1247,7 +1232,7 @@ void loop() {
     ch224aReady = ch224Begin();
     if (ch224aReady) {
       Serial.println("CH224A terdeteksi.");
-      applyVoltage(currentSetVoltage); // pulihkan voltase terakhir, JANGAN paksa ke 5V
+      applyVoltage(currentSetVoltage); 
     }
   }
 
