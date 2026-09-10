@@ -47,6 +47,22 @@ int fanSpeedPercent = 100;
 volatile uint32_t fanTachPulseCount = 0;
 unsigned int fanRpm = 0;
 unsigned long lastFanRpmCalc = 0;
+int ledSpeedPercent = 50;
+
+void setLedSpeed(int percent) {
+  if (percent < 1) percent = 1;
+  if (percent > 100) percent = 100;
+  ledSpeedPercent = percent;
+  if (prefs.getInt("ledSpeed", -1) != ledSpeedPercent) {
+    prefs.putInt("ledSpeed", ledSpeedPercent);
+  }
+}
+unsigned long ledStepDelay(unsigned long baseMs) {
+  float factor = (110.0f - (float)ledSpeedPercent) / 60.0f;
+  unsigned long scaled = (unsigned long)((float)baseMs * factor);
+  if (scaled < 4) scaled = 4;
+  return scaled;
+}
 
 #define FAN_PWM_PIN   2
 #define FAN_TACH_PIN  3
@@ -138,6 +154,17 @@ float current = 0;
 float chargerwatt = 0;
 bool pgood = 0;
 bool ch224aReady = false;
+String pdStatus = "CH224A_NOT_READY";
+
+void updatePdStatus() {
+  if (!ch224aReady) {
+    pdStatus = "CH224A_NOT_READY";
+  } else if (pgood) {
+    pdStatus = "PD_NEGOTIATED";
+  } else {
+    pdStatus = "PD_WAITING";
+  }
+}
 
 void drawOledVoltWatt() {
   oled.clearDisplay();
@@ -383,12 +410,26 @@ NimBLEServer* pServer = nullptr;
 NimBLECharacteristic* pCharacteristic = nullptr;
 volatile bool bleWritePending = false;
 portMUX_TYPE bleMux = portMUX_INITIALIZER_UNLOCKED;
-char bleCommandBuf[129] = {0};
+
+// Perintah masuk dipecah app jadi beberapa write, masing-masing diawali
+// header 2 byte [chunkIndex, totalChunks] - sama seperti pola yang dipakai
+// publishStatusBLE() untuk arah sebaliknya. Di sini kita sambung ulang
+// sebelum di-parse sebagai JSON (lihat komentar lengkap di publishStatusBLE).
+#define BLE_RX_BUFFER_SIZE 3072
+char bleRxAssembly[BLE_RX_BUFFER_SIZE];
+uint16_t bleRxAssemblyLen = 0;
+uint8_t bleRxExpectedTotal = 0;
+uint8_t bleRxReceivedCount = 0;
+
+char bleCommandBuf[BLE_RX_BUFFER_SIZE] = {0};
 volatile uint16_t bleCommandLen = 0;
+
+bool authPassSentThisSession = false; // dipakai publishStatusBLE(), direset tiap konek baru
 
 class MyServerCallbacks : public NimBLEServerCallbacks {
   void onConnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo) override {
     deviceConnected = true;
+    authPassSentThisSession = false;
     Serial.println("BLE: Terhubung ke App!");
   }
 
@@ -410,16 +451,43 @@ class MyServerCallbacks : public NimBLEServerCallbacks {
 class MyCharacteristicCallbacks : public NimBLECharacteristicCallbacks {
   void onWrite(NimBLECharacteristic* characteristic, NimBLEConnInfo& connInfo) override {
     std::string value = characteristic->getValue();
-    if (!value.empty()) {
-      size_t n = value.size();
-      if (n > sizeof(bleCommandBuf) - 1) n = sizeof(bleCommandBuf) - 1;
-      portENTER_CRITICAL(&bleMux);
-      memcpy(bleCommandBuf, value.data(), n);
-      bleCommandBuf[n] = '\0';
-      bleCommandLen = (uint16_t)n;
-      bleWritePending = true;
-      portEXIT_CRITICAL(&bleMux);
+    if (value.size() < 2) return; // minimal harus ada header 2 byte [chunkIndex, totalChunks]
+    uint8_t idx = (uint8_t)value[0];
+    uint8_t total = (uint8_t)value[1];
+    if (total == 0) total = 1;
+    size_t payloadLen = value.size() - 2;
+
+    portENTER_CRITICAL(&bleMux);
+    if (idx == 0) {
+      bleRxAssemblyLen = 0;
+      bleRxExpectedTotal = total;
+      bleRxReceivedCount = 0;
     }
+    if (idx != bleRxReceivedCount || total != bleRxExpectedTotal) {
+      // Paket keselip / urutan tidak nyambung - buang, tunggu paket index 0 berikutnya
+      // daripada nekat sambung JSON yang pasti rusak.
+      bleRxAssemblyLen = 0;
+      bleRxExpectedTotal = 0;
+      bleRxReceivedCount = 0;
+      portEXIT_CRITICAL(&bleMux);
+      return;
+    }
+    if (bleRxAssemblyLen + payloadLen < BLE_RX_BUFFER_SIZE) {
+      memcpy(bleRxAssembly + bleRxAssemblyLen, value.data() + 2, payloadLen);
+      bleRxAssemblyLen += payloadLen;
+    }
+    bleRxReceivedCount++;
+    if (bleRxReceivedCount >= bleRxExpectedTotal) {
+      size_t finalLen = min((size_t)bleRxAssemblyLen, (size_t)BLE_RX_BUFFER_SIZE - 1);
+      memcpy(bleCommandBuf, bleRxAssembly, finalLen);
+      bleCommandBuf[finalLen] = '\0';
+      bleCommandLen = (uint16_t)finalLen;
+      bleWritePending = true;
+      bleRxAssemblyLen = 0;
+      bleRxExpectedTotal = 0;
+      bleRxReceivedCount = 0;
+    }
+    portEXIT_CRITICAL(&bleMux);
   }
 };
 
@@ -525,7 +593,7 @@ void handleLedAnimation() {
     if (bouncePos >= NUM_LEDS - 1 || bouncePos <= 0) bounceDir = -bounceDir;
   } else if (ledMode == "knight") {
   	
-    if (millis() - lastLedStep < 30) return;
+    if (millis() - lastLedStep < ledStepDelay(30)) return;
     lastLedStep = millis();
     strip.clear();
     const int tailLen = 5;
@@ -541,7 +609,7 @@ void handleLedAnimation() {
     if (bouncePos >= NUM_LEDS - 1 || bouncePos <= 0) bounceDir = -bounceDir;
   } else if (ledMode == "fire") {
 
-    if (millis() - lastLedStep < 60) return;
+    if (millis() - lastLedStep < ledStepDelay(60)) return;
     lastLedStep = millis();
     for (int i = 0; i < NUM_LEDS; i++) {
       int flicker = random(140, 256);
@@ -552,7 +620,7 @@ void handleLedAnimation() {
     strip.show();
   } else if (ledMode == "chase") {
     
-    if (millis() - lastLedStep < 40) return;
+    if (millis() - lastLedStep < ledStepDelay(40)) return;
     lastLedStep = millis();
     strip.clear();
     strip.setPixelColor(bouncePos, strip.Color(0, 180, 255));
@@ -560,7 +628,7 @@ void handleLedAnimation() {
     bouncePos = (bouncePos + 1) % NUM_LEDS;
   } else if (ledMode == "colorwave") {
     
-    if (millis() - lastLedStep < 30) return;
+    if (millis() - lastLedStep < ledStepDelay(30)) return;
     lastLedStep = millis();
     colorwavePhase += 0.06;
 
@@ -592,7 +660,9 @@ String buildStatusJson(bool includeSecret) {
   doc["chargerWatt"] = chargerwatt;
   doc["powerGood"] = pgood;
   doc["ch224aReady"] = ch224aReady;
+  doc["pdStatus"] = pdStatus;
   doc["fanSpeed"] = fanSpeedPercent;
+  doc["ledSpeed"] = ledSpeedPercent;
   doc["fanRpm"] = fanRpm;
   doc["peltier"] = peltierOn;
   doc["netMode"] = netMode;
@@ -609,11 +679,29 @@ String buildStatusJson(bool includeSecret) {
   return jsonStr;
 }
 
+#define BLE_CHUNK_SIZE 180
+
 void publishStatusBLE() {
-  if (deviceConnected && pCharacteristic != nullptr) {
-    String jsonStr = buildStatusJson(true);
-    pCharacteristic->setValue(jsonStr);
+  if (!deviceConnected || pCharacteristic == nullptr) return;
+  
+  String jsonStr = buildStatusJson(!authPassSentThisSession);
+  if (!authPassSentThisSession) authPassSentThisSession = true;
+
+  size_t total = jsonStr.length();
+  size_t numChunks = (total + BLE_CHUNK_SIZE - 1) / BLE_CHUNK_SIZE;
+  if (numChunks == 0) numChunks = 1;
+  if (numChunks > 255) numChunks = 255; 
+
+  for (size_t i = 0; i < numChunks; i++) {
+    size_t start = i * BLE_CHUNK_SIZE;
+    size_t len = min((size_t)BLE_CHUNK_SIZE, total - start);
+    uint8_t packet[BLE_CHUNK_SIZE + 2];
+    packet[0] = (uint8_t)i;
+    packet[1] = (uint8_t)numChunks;
+    memcpy(packet + 2, jsonStr.c_str() + start, len);
+    pCharacteristic->setValue(packet, len + 2);
     pCharacteristic->notify();
+    if (numChunks > 1) delay(15); 
   }
 }
 
@@ -629,6 +717,10 @@ void processCommandJson(const String& cmd) {
   }
   if (doc["ledMode"].is<const char*>()) {
     applyLedMode(doc["ledMode"].as<String>());
+    triggerCmdBlink();
+  }
+  if (doc["ledSpeed"].is<int>()) {
+    setLedSpeed(doc["ledSpeed"]);
     triggerCmdBlink();
   }
   if (doc["fanSpeed"].is<int>()) {
@@ -946,6 +1038,7 @@ void handleSetCmd() {
   if (server.hasArg("voltage")) doc["voltage"] = server.arg("voltage").toFloat();
   if (server.hasArg("ledMode")) doc["ledMode"] = server.arg("ledMode");
   if (server.hasArg("fanSpeed")) doc["fanSpeed"] = server.arg("fanSpeed").toInt();
+  if (server.hasArg("ledSpeed")) doc["ledSpeed"] = server.arg("ledSpeed").toInt();
   if (server.hasArg("peltier")) doc["peltier"] = (server.arg("peltier") == "1" || server.arg("peltier") == "true");
   if (server.hasArg("action")) doc["action"] = server.arg("action");
   String cmd;
@@ -1104,12 +1197,14 @@ void setup() {
   float savedVoltage = prefs.getFloat("voltage", 5.0);
   int savedFanSpeed = prefs.getInt("fanSpeed", 100);
   String savedLedMode = prefs.getString("ledMode", "off");
+  int savedLedSpeed = prefs.getInt("ledSpeed", 50);
 
   pinMode(PIN_ONBOARD_LED, OUTPUT);
   onboardLedWrite(false);
 
   ledcAttach(FAN_PWM_PIN, FAN_PWM_FREQ_HZ, FAN_PWM_RESOLUTION);
   setFanSpeed(savedFanSpeed);
+  setLedSpeed(savedLedSpeed);
 
   pinMode(FAN_TACH_PIN, INPUT_PULLUP);
   attachInterrupt(digitalPinToInterrupt(FAN_TACH_PIN), fanTachISR, FALLING);
@@ -1123,6 +1218,7 @@ void setup() {
     Serial.println(ch224Addr, HEX);
     applyVoltage(savedVoltage);
   }
+  updatePdStatus();
 
   strip.begin();
   strip.setBrightness(80);
@@ -1151,7 +1247,8 @@ void setup() {
 }
 
 void loop() {
-  char cmdBuf[129] = {0};
+  static char cmdBuf[BLE_RX_BUFFER_SIZE];
+  cmdBuf[0] = '\0';
   portENTER_CRITICAL(&bleMux);
 
   if (bleWritePending) {
@@ -1217,6 +1314,7 @@ void loop() {
       pgood = CH224X1->isPowerGood();
       current = CH224X1->getCurrentProfile() / 1000.0;
       chargerwatt = current * currentSetVoltage;
+      updatePdStatus();
       Serial.print("Maximum current : ");
       Serial.print(current, 0);
       Serial.println(" A)");
@@ -1230,6 +1328,7 @@ void loop() {
     lastCh224Retry = millis();
     Serial.println("Mencoba deteksi ulang CH224A...");
     ch224aReady = ch224Begin();
+    updatePdStatus();
     if (ch224aReady) {
       Serial.println("CH224A terdeteksi.");
       applyVoltage(currentSetVoltage); 
