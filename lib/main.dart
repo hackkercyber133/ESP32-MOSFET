@@ -505,6 +505,9 @@ class _ControllerPageState extends State<ControllerPage> {
   bool isScanning = false;
   List<ScanResult> scanResults = [];
   bool bleConnected = false;
+  List<int> _bleChunkBuffer = [];
+  int _bleChunkExpectedTotal = 0;
+  int _bleChunkReceivedCount = 0;
 
   // ===== DATA VOLTASE =====
   // Hardware (board decoy PD3.1/QC3.0) mendukung 4 level tegangan
@@ -515,6 +518,7 @@ class _ControllerPageState extends State<ControllerPage> {
   int fanRpm = 0; // RPM aktual fan, dari field "fanRpm" firmware (hasil baca tachometer)
   bool peltierOn = false; // ON/OFF peltier (MOSFET low-side), dari field "peltier" firmware
   String ledMode = "off"; // "off" | "static" | "running" | "disco" | "bounce"
+  int ledSpeed = 50; // kecepatan animasi LED (1-100), dari field "ledSpeed" firmware - cuma berlaku utk mode knight/fire/chase/colorwave
   String lastLedEffect = "running"; // efek terakhir dipilih, dipakai saat tombol ON
   String uptime = "00:00:00";
   String status = "🔴 Offline";
@@ -795,6 +799,7 @@ class _ControllerPageState extends State<ControllerPage> {
     final rawFanSpeed = data['fanSpeed'];
     final rawFanRpm = data['fanRpm'];
     final rawPeltier = data['peltier'];
+    final rawLedSpeed = data['ledSpeed'];
 
     if (rawVoltage is num) setVolt = rawVoltage.toDouble();
     if (rawPowerGood is bool) powerGood = rawPowerGood;
@@ -804,6 +809,7 @@ class _ControllerPageState extends State<ControllerPage> {
     if (rawFanSpeed is num) fanSpeed = rawFanSpeed.toInt();
     if (rawFanRpm is num) fanRpm = rawFanRpm.toInt();
     if (rawPeltier is bool) peltierOn = rawPeltier;
+    if (rawLedSpeed is num) ledSpeed = rawLedSpeed.toInt();
     ledMode = data['ledMode'] ?? ledMode;
     uptime = data['uptime'] ?? uptime;
     if (ledMode != "off") lastLedEffect = ledMode;
@@ -1038,19 +1044,7 @@ class _ControllerPageState extends State<ControllerPage> {
             _controlChar = characteristic; // cache sekali di sini, dipakai ulang untuk semua write
             await characteristic.setNotifyValue(true);
             characteristic.onValueReceived.listen((value) {
-              String payload = utf8.decode(value);
-              try {
-                var data = jsonDecode(payload);
-                if (data['deviceId'] != null && data['deviceId'] != activeCooler?.id) return;
-                setState(() {
-                  _applyDeviceStatus(Map<String, dynamic>.from(data));
-                });
-                if (activeCooler != null) {
-                  HistoryService.recordStatus(coolerId: activeCooler!.id, online: true, voltage: setVolt);
-                }
-              } catch (e) {
-                debugPrint("BLE status parse gagal: $e | payload: $payload");
-              }
+              _handleBleStatusChunk(value);
             });
           }
         }
@@ -1067,9 +1061,67 @@ class _ControllerPageState extends State<ControllerPage> {
     }
   }
 
+  // Tiap paket notify BLE diawali 2 byte header: [chunkIndex, totalChunks],
+  // sisanya potongan JSON mentah. Nyambung semua potongan sampai lengkap,
+  // baru di-parse sekali. Kalau ada potongan yang keselip/hilang di tengah
+  // jalan (paket berikutnya chunkIndex-nya gak nyambung urutan), buang
+  // buffer yang lagi dikumpulin daripada nekat parse JSON yang udah pasti
+  // rusak - nunggu siklus publish berikutnya (chunkIndex 0 lagi) buat mulai
+  // dari awal.
+  void _handleBleStatusChunk(List<int> value) {
+    if (value.length < 2) return;
+    final chunkIndex = value[0];
+    final totalChunks = value[1];
+    final payload = value.sublist(2);
+
+    if (chunkIndex == 0) {
+      _bleChunkBuffer = <int>[];
+      _bleChunkExpectedTotal = totalChunks;
+      _bleChunkReceivedCount = 0;
+    } else if (chunkIndex != _bleChunkReceivedCount || totalChunks != _bleChunkExpectedTotal) {
+      // Potongan gak nyambung urutan (ke-skip/kedatengan campur sama sesi
+      // publish lain) - buang, tunggu chunk 0 berikutnya.
+      _bleChunkBuffer = [];
+      _bleChunkExpectedTotal = 0;
+      _bleChunkReceivedCount = 0;
+      return;
+    }
+
+    _bleChunkBuffer.addAll(payload);
+    _bleChunkReceivedCount++;
+
+    if (_bleChunkReceivedCount < _bleChunkExpectedTotal) return; // masih nunggu potongan lain
+
+    String jsonPayload = "";
+    try {
+      jsonPayload = utf8.decode(_bleChunkBuffer);
+      var data = jsonDecode(jsonPayload);
+      if (data['deviceId'] != null && data['deviceId'] != activeCooler?.id) return;
+      setState(() {
+        _applyDeviceStatus(Map<String, dynamic>.from(data));
+      });
+      if (activeCooler != null) {
+        HistoryService.recordStatus(coolerId: activeCooler!.id, online: true, voltage: setVolt);
+      }
+    } catch (e) {
+      debugPrint("BLE status parse gagal: $e | payload: $jsonPayload");
+    } finally {
+      _bleChunkBuffer = [];
+      _bleChunkExpectedTotal = 0;
+      _bleChunkReceivedCount = 0;
+    }
+  }
+
   // Satu jalur write terpusat: pakai karakteristik yang sudah di-cache,
   // dan writeWithoutResponse kalau firmware mendukungnya (lebih cepat,
   // tidak menunggu ACK balik dari ESP32).
+  //
+  // Tiap paket diawali header 2 byte [chunkIndex, totalChunks] (sama seperti
+  // pola notify status dari ESP32, cuma arahnya dibalik) supaya payload yang
+  // lebih panjang dari MTU tidak kepotong diam-diam - firmware yang
+  // menyambung ulang sebelum di-parse sebagai JSON.
+  static const int _bleWriteChunkSize = 240; // aman di bawah MTU 247-3 byte
+
   Future<bool> _writeControlBLE(Map<String, dynamic> payload) async {
     if (!bleConnected || bleDevice == null) return false;
     var ch = _controlChar;
@@ -1085,8 +1137,17 @@ class _ControllerPageState extends State<ControllerPage> {
     }
     if (ch == null) return false;
     try {
+      final bytes = utf8.encode(jsonEncode(payload));
       final canWriteFast = ch.properties.writeWithoutResponse;
-      await ch.write(utf8.encode(jsonEncode(payload)), withoutResponse: canWriteFast);
+      final totalChunks = bytes.isEmpty ? 1 : ((bytes.length + _bleWriteChunkSize - 1) ~/ _bleWriteChunkSize).clamp(1, 255);
+      for (int i = 0; i < totalChunks; i++) {
+        final start = i * _bleWriteChunkSize;
+        final end = (start + _bleWriteChunkSize > bytes.length) ? bytes.length : start + _bleWriteChunkSize;
+        final chunk = bytes.sublist(start, end);
+        final packet = <int>[i, totalChunks, ...chunk];
+        await ch.write(packet, withoutResponse: canWriteFast);
+        if (totalChunks > 1) await Future.delayed(const Duration(milliseconds: 15));
+      }
       return true;
     } catch (e) {
       return false;
@@ -1195,6 +1256,57 @@ class _ControllerPageState extends State<ControllerPage> {
     final ok = await _writeControlBLE({"fanSpeed": percent});
     if (ok) {
       setState(() => fanSpeed = percent);
+    } else {
+      _showSnack("❌ Gagal mengirim perintah ke perangkat");
+    }
+  }
+
+  void sendLedSpeed(int percent) {
+    if (activeCooler == null) {
+      _showSnack("⚠️ Pilih atau tambah cooler dulu");
+      return;
+    }
+    percent = percent.clamp(1, 100);
+    if (connectionMode == "WiFi") {
+      sendLedSpeedLocalWifi(percent);
+    } else {
+      sendLedSpeedBLE(percent);
+    }
+  }
+
+  void sendLedSpeedLocalWifi(int percent) async {
+    if (_wifiIp == null) {
+      _showSnack("⚠️ Belum menemukan ESP32 di jaringan, tunggu sebentar / cek WiFi HP");
+      return;
+    }
+    try {
+      final response = await http
+          .post(Uri.http(_wifiIp!, "/set", {"ledSpeed": percent.toString()}), headers: esp32AuthHeaders(activeCooler))
+          .timeout(Duration(seconds: 3));
+      if (response.statusCode == 200) {
+        try {
+          final data = jsonDecode(response.body);
+          if (data is Map<String, dynamic>) {
+            setState(() => _applyDeviceStatus(data));
+          }
+        } catch (_) {}
+      } else {
+        _showSnack("❌ ESP32 menolak perintah kecepatan LED");
+      }
+    } catch (e) {
+      _showSnack("⚠️ Gagal kirim perintah, cek koneksi WiFi");
+    }
+  }
+
+  void sendLedSpeedBLE(int percent) async {
+    if (!bleConnected || bleDevice == null) {
+      setState(() => status = "🔴 Offline");
+      _showSnack("⚠️ Belum terhubung ke perangkat Bluetooth");
+      return;
+    }
+    final ok = await _writeControlBLE({"ledSpeed": percent});
+    if (ok) {
+      setState(() => ledSpeed = percent);
     } else {
       _showSnack("❌ Gagal mengirim perintah ke perangkat");
     }
@@ -2118,7 +2230,7 @@ class _ControllerPageState extends State<ControllerPage> {
           ),
           const SizedBox(width: 10),
           Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            const _ShimmerTitle(text: 'VLADIMIR PUTIN'),
+            const _ShimmerTitle(text: '🅵🆈🆉 "フランキー"'),
             Text('GAMING CONTROL • 2026', style: TextStyle(color: AppColors.textFaint(isDark), fontSize: 8, letterSpacing: 1.4)),
           ]),
         ]),
@@ -2407,24 +2519,62 @@ class _ControllerPageState extends State<ControllerPage> {
     ]),
   );
 
-  Widget _nexusRgbCard(bool isDark) => _nexusCard(isDark, child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-    _nexusSectionTitle(isDark, 'RGB ENGINE', 'Efek LED dari firmware ESP32'),
-    const SizedBox(height: 12),
-    Row(children: [
-      _rgbButton(isDark, 'OFF', 'off', Icons.power_settings_new_rounded),
-      _rgbButton(isDark, 'STATIC', 'static', Icons.circle),
-      _rgbButton(isDark, 'RUN', 'running', Icons.motion_photos_on_rounded),
-      _rgbButton(isDark, 'DISCO', 'disco', Icons.celebration_rounded),
-      _rgbButton(isDark, 'BOUNCE', 'bounce', Icons.swap_horiz_rounded),
-    ]),
-    const SizedBox(height: 8),
-    Row(children: [
-      _rgbButton(isDark, 'KNIGHT', 'knight', Icons.remove_red_eye_rounded),
-      _rgbButton(isDark, 'FIRE', 'fire', Icons.local_fire_department_rounded),
-      _rgbButton(isDark, 'CHASE', 'chase', Icons.arrow_forward_rounded),
-      _rgbButton(isDark, 'WAVE', 'colorwave', Icons.waves_rounded),
-    ]),
-  ]));
+  Widget _nexusRgbCard(bool isDark) {
+    const speedControlledModes = {'knight', 'fire', 'chase', 'colorwave'};
+    final showSpeedSlider = speedControlledModes.contains(ledMode);
+    return _nexusCard(isDark, child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      _nexusSectionTitle(isDark, 'RGB ENGINE', 'Efek LED dari firmware ESP32'),
+      const SizedBox(height: 12),
+      Row(children: [
+        _rgbButton(isDark, 'OFF', 'off', Icons.power_settings_new_rounded),
+        _rgbButton(isDark, 'STATIC', 'static', Icons.circle),
+        _rgbButton(isDark, 'RUN', 'running', Icons.motion_photos_on_rounded),
+        _rgbButton(isDark, 'DISCO', 'disco', Icons.celebration_rounded),
+        _rgbButton(isDark, 'BOUNCE', 'bounce', Icons.swap_horiz_rounded),
+      ]),
+      const SizedBox(height: 8),
+      Row(children: [
+        _rgbButton(isDark, 'KNIGHT', 'knight', Icons.remove_red_eye_rounded),
+        _rgbButton(isDark, 'FIRE', 'fire', Icons.local_fire_department_rounded),
+        _rgbButton(isDark, 'CHASE', 'chase', Icons.arrow_forward_rounded),
+        _rgbButton(isDark, 'WAVE', 'colorwave', Icons.waves_rounded),
+      ]),
+      if (showSpeedSlider) ...[
+        const SizedBox(height: 14),
+        Divider(color: AppColors.textFaint(isDark).withOpacity(.15), height: 1),
+        const SizedBox(height: 12),
+        Row(children: [
+          Icon(Icons.speed_rounded, color: accentColor, size: 16),
+          const SizedBox(width: 8),
+          Text('KECEPATAN', style: TextStyle(color: AppColors.textFaint(isDark), fontSize: 9, fontWeight: FontWeight.w900, letterSpacing: 1.4)),
+          const Spacer(),
+          Text('$ledSpeed%', style: TextStyle(color: accentColor, fontSize: 13, fontWeight: FontWeight.w900)),
+        ]),
+        SliderTheme(
+          data: SliderTheme.of(context).copyWith(
+            activeTrackColor: accentColor,
+            inactiveTrackColor: accentColor.withOpacity(.15),
+            thumbColor: accentColor,
+            overlayColor: accentColor.withOpacity(.15),
+            trackHeight: 5,
+          ),
+          child: Slider(
+            value: ledSpeed.toDouble(),
+            min: 1,
+            max: 100,
+            divisions: 33,
+            label: '$ledSpeed%',
+            onChanged: (v) => setState(() => ledSpeed = v.round()),
+            onChangeEnd: (v) => sendLedSpeed(v.round()),
+          ),
+        ),
+        Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+          Text('LAMBAT', style: TextStyle(color: AppColors.textFaint(isDark), fontSize: 8)),
+          Text('CEPAT', style: TextStyle(color: AppColors.textFaint(isDark), fontSize: 8)),
+        ]),
+      ],
+    ]));
+  }
 
   Widget _rgbButton(bool isDark, String label, String mode, IconData icon) {
     final selected = ledMode == mode;
