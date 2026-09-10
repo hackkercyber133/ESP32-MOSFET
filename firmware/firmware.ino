@@ -1,4 +1,4 @@
-//VLADIMIR PUTIN//
+
 #include <Arduino.h>
 #include <WiFi.h>
 #include <WebServer.h>
@@ -31,32 +31,28 @@ String computeDeviceId() {
 #define SCL_PIN      6
 #define PG_PIN       7
 
-// ===== OLED 0.49" I2C (SSD1315, 64x32) =====
-// Numpang di bus I2C yang sama dengan CH224X (SDA_PIN/SCL_PIN) - beda
-// alamat (OLED 0x3C, CH224X 0x23/0x22) jadi tidak bentrok satu bus. Gak
-// butuh GPIO tambahan sama sekali.
 #define OLED_ADDR   0x3C
 #define OLED_WIDTH  64
 #define OLED_HEIGHT 32
 Adafruit_SSD1306 oled(OLED_WIDTH, OLED_HEIGHT, &Wire, -1);
 bool oledReady = false;
 
-// ===== 3 SESI TAMPILAN OLED =====
-// 0 = mata robot (animasi, 15 detik)
-// 1 = Volt + Watt (digabung kecil, atas-bawah)
-// 2 = Fan (RPM) + PD (digabung)
 int oledSession = 0;
 unsigned long lastOledSessionSwitch = 0;
 unsigned long lastOledDraw = 0;
 const unsigned long OLED_SESSION_MS[3] = {15000, 3000, 3000};
-const unsigned long OLED_EYES_FPS_MS = 60; // animasi mata di-redraw tiap 60ms biar halus
+const unsigned long OLED_EYES_FPS_MS = 60;
 
-// Layar berisi label singkat (size1) di atas + nilai besar (size2) di bawah,
-// dipakai buat frame 0-3 (voltase/watt/fan/PD) - gaya seragam biar konsisten.
 int fanSpeedPercent = 100;
 volatile uint32_t fanTachPulseCount = 0;
 unsigned int fanRpm = 0;
 unsigned long lastFanRpmCalc = 0;
+
+#define FAN_PWM_PIN   2
+#define FAN_TACH_PIN  3
+#define FAN_PWM_CHANNEL   0
+#define FAN_PWM_FREQ_HZ   25000
+#define FAN_PWM_RESOLUTION 8
 
 void IRAM_ATTR fanTachISR() {
   fanTachPulseCount++;
@@ -86,6 +82,10 @@ void updateFanRpm() {
 
   fanRpm = (unsigned int)((pulses / 2.0) * (60000.0 / elapsedMs));
 }
+
+#define PIN_ONBOARD_LED 8
+#define BOOT_BTN_PIN 9
+#define ONBOARD_LED_ACTIVE_LOW true
 
 void onboardLedWrite(bool on) {
   digitalWrite(PIN_ONBOARD_LED, (ONBOARD_LED_ACTIVE_LOW ? !on : on) ? LOW : HIGH);
@@ -139,9 +139,6 @@ float chargerwatt = 0;
 bool pgood = 0;
 bool ch224aReady = false;
 
-// ===================================================================
-// SESI 2: Volt + Watt digabung kecil, atas-bawah
-// ===================================================================
 void drawOledVoltWatt() {
   oled.clearDisplay();
   oled.setTextColor(SSD1306_WHITE);
@@ -161,9 +158,6 @@ void drawOledVoltWatt() {
   oled.display();
 }
 
-// ===================================================================
-// SESI 3: Fan (RPM) + PD digabung
-// ===================================================================
 void drawOledFanPd() {
   oled.clearDisplay();
   oled.setTextColor(SSD1306_WHITE);
@@ -183,12 +177,6 @@ void drawOledFanPd() {
   oled.display();
 }
 
-// ===================================================================
-// SESI 1: Mata robot - 4 ekspresi (normal+lirik, senyum, marah, cemburut)
-// ===================================================================
-
-// Tinggi mata untuk kedipan - siklus 3 detik, dipakai di ekspresi normal.
-// Terpisah dari timeline ekspresi supaya kedip tetap jalan natural.
 int robotBlinkHeight(unsigned long now) {
   unsigned long bt = now % 3000;
   int h;
@@ -199,15 +187,12 @@ int robotBlinkHeight(unsigned long now) {
   return constrain(h, 2, 20);
 }
 
-// Ekspresi normal: mata bulat, bisa kedip, bisa lirik kiri/kanan
-// lewat offsetX (dipanggil dengan offset -6/0/+6).
 void drawEyesNormal(int offsetX, int h) {
   int y = 16 - h / 2;
   oled.fillRoundRect(8 + offsetX, y, 14, h, 3, SSD1306_WHITE);
   oled.fillRoundRect(42 + offsetX, y, 14, h, 3, SSD1306_WHITE);
 }
 
-// Ekspresi senyum: mata jadi ^ ^ (chevron ceria) + mulut senyum.
 void drawEyesSenyum() {
   for (int dy = 0; dy < 2; dy++) {
     oled.drawLine(9, 16 + dy, 16, 8 + dy, SSD1306_WHITE);
@@ -220,7 +205,6 @@ void drawEyesSenyum() {
   oled.drawLine(36, 30, 42, 25, SSD1306_WHITE);
 }
 
-// Ekspresi marah: alis miring tajam ke tengah + mata menyipit + mulut datar.
 void drawEyesMarah() {
   for (int dy = 0; dy < 2; dy++) {
     oled.drawLine(5, 4 + dy, 20, 11 + dy, SSD1306_WHITE);
@@ -231,8 +215,6 @@ void drawEyesMarah() {
   oled.drawFastHLine(24, 28, 16, SSD1306_WHITE);
 }
 
-// Ekspresi cemburut (ngambek): mata setengah tertutup datar + alis lurus
-// (lebih halus dari marah) + mulut kecil mengerucut.
 void drawEyesCemburut() {
   oled.drawFastHLine(8, 9, 14, SSD1306_WHITE);
   oled.drawFastHLine(42, 9, 14, SSD1306_WHITE);
@@ -241,17 +223,14 @@ void drawEyesCemburut() {
   oled.fillRoundRect(29, 26, 6, 3, 1, SSD1306_WHITE);
 }
 
-// Timeline 15 detik: normal(lihat depan) -> lirik kiri -> lirik kanan ->
-// senyum -> marah -> cemburut, lalu balik ke sesi berikutnya. Dipanggil
-// berkali-kali (60ms) selama sesi ini aktif supaya kelihatan gerak/hidup.
 void drawOledRobotEyes(unsigned long sesiElapsed) {
   oled.clearDisplay();
   unsigned long now = millis();
 
   if (sesiElapsed < 7000) {
     int offsetX = 0;
-    if (sesiElapsed >= 3000 && sesiElapsed < 5000) offsetX = -6; // lirik kiri
-    else if (sesiElapsed >= 5000) offsetX = 6;                    // lirik kanan
+    if (sesiElapsed >= 3000 && sesiElapsed < 5000) offsetX = -6;
+    else if (sesiElapsed >= 5000) offsetX = 6;
     drawEyesNormal(offsetX, robotBlinkHeight(now));
   } else if (sesiElapsed < 9500) {
     drawEyesSenyum();
@@ -264,11 +243,6 @@ void drawOledRobotEyes(unsigned long sesiElapsed) {
   oled.display();
 }
 
-// ===================================================================
-// Dipanggil tiap loop() - throttled sendiri di dalam. Ganti sesi sesuai
-// durasi masing-masing (OLED_SESSION_MS). Sesi mata di-redraw lebih
-// sering (60ms) supaya animasinya halus; sesi status cukup digambar
-// sekali pas baru ganti (hemat trafik I2C).
 void updateOled() {
   if (!oledReady) return;
   unsigned long now = millis();
@@ -292,23 +266,35 @@ void updateOled() {
 CH224X_I2C* CH224X1 = nullptr;
 uint8_t ch224Addr = CH224_ADDR_PRIMARY;
 
+bool i2cDeviceAcks(uint8_t addr) {
+  Wire.beginTransmission(addr);
+  return Wire.endTransmission() == 0;
+}
+
+// Deteksi CH224A: begin() bawaan library kadang gagal walau chip sebenarnya
+// hidup & bisa nerima perintah (PG pin belum stabil pas boot, dll). Jadi kita
+// cek dulu chip-nya benar2 ACK di bus I2C secara langsung - kalau ACK, anggap
+// chip ADA (ch224aReady = true) meskipun begin() bawaan sempat gagal, supaya
+// status di app tidak salah lapor "offline" padahal chip-nya hidup.
 bool ch224Begin() {
   if (CH224X1 != nullptr) {
     delete CH224X1;
     CH224X1 = nullptr;
   }
-  CH224X1 = new CH224X_I2C(Wire, CH224_ADDR_PRIMARY, PG_PIN);
-  if (CH224X1->begin()) {
-    ch224Addr = CH224_ADDR_PRIMARY;
-    return true;
+
+  uint8_t addr = i2cDeviceAcks(CH224_ADDR_PRIMARY) ? CH224_ADDR_PRIMARY
+               : i2cDeviceAcks(CH224_ADDR_SECONDARY) ? CH224_ADDR_SECONDARY
+               : 0;
+
+  if (addr == 0) return false; // benar2 tidak ada device di kedua alamat
+
+  CH224X1 = new CH224X_I2C(Wire, addr, PG_PIN);
+  ch224Addr = addr;
+  bool beginOk = CH224X1->begin();
+  if (!beginOk) {
+    Serial.println("CH224A ACK di I2C tapi begin() library gagal - tetap dipakai (kemungkinan PG pin belum stabil).");
   }
-  delete CH224X1;
-  CH224X1 = new CH224X_I2C(Wire, CH224_ADDR_SECONDARY, PG_PIN);
-  if (CH224X1->begin()) {
-    ch224Addr = CH224_ADDR_SECONDARY;
-    return true;
-  }
-  return false;
+  return true; // chip terbukti ACK di bus, anggap siap dipakai
 }
 
 void scanI2CBus() {
@@ -342,22 +328,6 @@ uint16_t rainbowStep = 0;
 int bouncePos = 0;
 int bounceDir = 1;
 
-#define PIN_ONBOARD_LED 8
-#define BOOT_BTN_PIN 9
-#define ONBOARD_LED_ACTIVE_LOW true
-
-#define FAN_PWM_PIN   2
-#define FAN_TACH_PIN  3
-#define FAN_PWM_CHANNEL   0
-#define FAN_PWM_FREQ_HZ   25000
-#define FAN_PWM_RESOLUTION 8
-
-// ===== PELTIER ON/OFF (low-side switch pakai MOSFET IRLZ44N) =====
-// Gate MOSFET ke GPIO10 lewat resistor seri ~150-220R, dan WAJIB ada
-// resistor pull-down ~10K dari gate ke GND supaya MOSFET pasti OFF
-// selama ESP32 boot/reset (sebelum firmware sempat set pinMode).
-// Peltier SELALU default OFF tiap kali device menyala/restart - demi
-// keamanan (tidak auto-nyala sendiri tanpa perintah dari app).
 #define PELTIER_PIN 10
 bool peltierOn = false;
 
@@ -368,7 +338,6 @@ void setPeltier(bool on) {
     prefs.putBool("peltierOn", peltierOn);
   }
 }
-
 
 String netMode;
 String savedSsid;
@@ -490,9 +459,12 @@ uint32_t wheelColor(byte pos) {
   return strip.Color(pos * 3, 255 - pos * 3, 0);
 }
 
+float colorwavePhase = 0;
+
 void applyLedMode(String mode) {
   if (mode != "off" && mode != "static" && mode != "running" &&
-      mode != "disco" && mode != "bounce") return;
+      mode != "disco" && mode != "bounce" && mode != "knight" &&
+      mode != "fire" && mode != "chase" && mode != "colorwave") return;
   ledMode = mode;
   if (mode != "off") lastLedEffect = mode;
 
@@ -505,9 +477,13 @@ void applyLedMode(String mode) {
       strip.setPixelColor(i, wheelColor(hue));
     }
     strip.show();
-  } else if (mode == "bounce") {
+  } else if (mode == "bounce" || mode == "knight") {
     bouncePos = 0;
     bounceDir = 1;
+  } else if (mode == "chase") {
+    bouncePos = 0;
+  } else if (mode == "colorwave") {
+    colorwavePhase = 0;
   }
 
   if (prefs.getString("ledMode", "") != ledMode) {
@@ -552,8 +528,66 @@ void handleLedAnimation() {
     strip.show();
     bouncePos += bounceDir;
     if (bouncePos >= NUM_LEDS - 1 || bouncePos <= 0) bounceDir = -bounceDir;
+  } else if (ledMode == "knight") {
+    // Knight Rider klasik: satu mata merah bolak-balik dengan ekor pudar,
+    // sisanya gelap total (bukan pelangi kayak "bounce").
+    if (millis() - lastLedStep < 30) return;
+    lastLedStep = millis();
+    strip.clear();
+    const int tailLen = 5;
+    for (int t = 0; t < tailLen; t++) {
+      int pos = bouncePos - (bounceDir * t);
+      if (pos >= 0 && pos < NUM_LEDS) {
+        int fade = 255 - (t * (255 / tailLen));
+        strip.setPixelColor(pos, strip.Color(fade, 0, 0));
+      }
+    }
+    strip.show();
+    bouncePos += bounceDir;
+    if (bouncePos >= NUM_LEDS - 1 || bouncePos <= 0) bounceDir = -bounceDir;
+  } else if (ledMode == "fire") {
+    // Api berkedip: tiap pixel dapat warna oranye-kuning acak yang beda
+    // tiap frame, mensimulasikan kobaran api.
+    if (millis() - lastLedStep < 60) return;
+    lastLedStep = millis();
+    for (int i = 0; i < NUM_LEDS; i++) {
+      int flicker = random(140, 256);
+      uint8_t r = flicker;
+      uint8_t g = flicker * random(25, 90) / 100;
+      strip.setPixelColor(i, strip.Color(r, g, 0));
+    }
+    strip.show();
+  } else if (ledMode == "chase") {
+    // Satu titik warna solid berjalan satu arah terus-menerus (bukan
+    // bolak-balik seperti knight/bounce), sisanya gelap.
+    if (millis() - lastLedStep < 40) return;
+    lastLedStep = millis();
+    strip.clear();
+    strip.setPixelColor(bouncePos, strip.Color(0, 180, 255));
+    strip.show();
+    bouncePos = (bouncePos + 1) % NUM_LEDS;
+  } else if (ledMode == "colorwave") {
+    // Mirip "Colorwaves" WLED: gelombang warna yang mengalir & berdenyut,
+    // blend antara 2 warna dengan lembah gelap di antaranya (bukan pelangi
+    // penuh, cuma 2 warna utama + hitam natural di titik terendah gelombang).
+    if (millis() - lastLedStep < 30) return;
+    lastLedStep = millis();
+    colorwavePhase += 0.06;
+
+    // Default warna meniru preset: putih-lavender & merah.
+    const uint8_t aR = 243, aG = 237, aB = 255;
+    const uint8_t bR = 255, bG = 0,   bB = 0;
+
+    for (int i = 0; i < NUM_LEDS; i++) {
+      float wave = (sinf(i * 0.35f + colorwavePhase) + 1.0f) / 2.0f;        // 0..1, bikin lembah gelap
+      float blend = (sinf(i * 0.18f + colorwavePhase * 0.6f) + 1.0f) / 2.0f; // 0..1, campuran warna A/B lebih lambat
+      uint8_t r = (uint8_t)((aR * (1.0f - blend) + bR * blend) * wave);
+      uint8_t g = (uint8_t)((aG * (1.0f - blend) + bG * blend) * wave);
+      uint8_t b = (uint8_t)((aB * (1.0f - blend) + bB * blend) * wave);
+      strip.setPixelColor(i, strip.Color(r, g, b));
+    }
+    strip.show();
   }
-}
 
 String buildStatusJson(bool includeSecret) {
   unsigned long runtime = millis() - startMillis;
@@ -596,8 +630,11 @@ void publishStatusBLE() {
 void processCommandJson(const String& cmd) {
   JsonDocument doc;
   if (deserializeJson(doc, cmd)) return;
-  if (doc["voltage"].is<float>()) {
-    applyVoltage(doc["voltage"]);
+  if (doc["voltage"].is<float>() || doc["voltage"].is<int>()) {
+    float v = doc["voltage"].as<float>();
+    Serial.print("Perintah voltase diterima dari app: ");
+    Serial.println(v);
+    applyVoltage(v);
     triggerCmdBlink();
   }
   if (doc["ledMode"].is<const char*>()) {
@@ -977,7 +1014,7 @@ void startWifiControlMode(const String& ssid, const String& pass) {
   }
   if (WiFi.status() == WL_CONNECTED) {
     Serial.println("\nSUKSES: WiFi tersambung, IP: " + WiFi.localIP().toString());
-    WiFi.setSleep(false); // matikan modem-sleep — sering jadi penyebab WiFi ESP32 putus sendiri
+    WiFi.setSleep(false);
     server.begin();
     udp.begin(UDP_BEACON_PORT);
     wifiControlActive = true;
@@ -995,6 +1032,12 @@ void startBleMode() {
   Serial.println("Menginisialisasi Bluetooth (NimBLE)...");
 
   NimBLEDevice::init(bleName.c_str());
+
+  // JSON status ~230+ byte (banyak field), sedangkan MTU default BLE cuma
+  // 23 byte. Kalau tidak diperbesar di sisi server juga, notify() bisa
+  // terpotong -> deserializeJson() di app gagal parse -> tampilan (voltase,
+  // status PD, dll) jadi tidak pernah ter-update walau hardware sudah benar.
+  NimBLEDevice::setMTU(247);
 
   NimBLEDevice::setSecurityAuth(true, false, true);
   NimBLEDevice::setSecurityIOCap(BLE_HS_IO_NO_INPUT_OUTPUT);
@@ -1048,8 +1091,7 @@ void handleBleAction(const String& action) {
 }
 
 void setup() {
-  // Paling pertama & sebelum apapun lain: pastikan pin gate peltier
-  // OUTPUT + LOW, supaya MOSFET pasti mati secepat mungkin saat boot.
+
   pinMode(PELTIER_PIN, OUTPUT);
   digitalWrite(PELTIER_PIN, LOW);
 
@@ -1106,7 +1148,7 @@ void setup() {
   if (!oledReady) {
     Serial.println("OLED SSD1315 tidak terdeteksi di 0x3C, melanjutkan tanpa display.");
   } else {
-    oledSession = 0; // mulai dari sesi mata robot
+    oledSession = 0;
     lastOledSessionSwitch = millis();
     drawOledRobotEyes(0);
   }
@@ -1164,7 +1206,7 @@ void loop() {
         wifiDownSince = millis();
         Serial.println("WiFi terputus, mencoba reconnect...");
         WiFi.reconnect();
-      } else if (millis() - wifiDownSince > 20000) {        
+      } else if (millis() - wifiDownSince > 20000) {
         Serial.println("WiFi tidak pulih dalam 20 detik, kembali ke mode Bluetooth...");
         prefs.putString("netMode", "ble");
         delay(300);
@@ -1205,7 +1247,7 @@ void loop() {
     ch224aReady = ch224Begin();
     if (ch224aReady) {
       Serial.println("CH224A terdeteksi.");
-      CH224X1->setVoltage(0);
+      applyVoltage(currentSetVoltage); // pulihkan voltase terakhir, JANGAN paksa ke 5V
     }
   }
 
