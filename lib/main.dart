@@ -284,7 +284,7 @@ class _SplashScreenState extends State<SplashScreen> with TickerProviderStateMix
                             ).createShader(bounds);
                           },
                           child: const Text(
-                            '🅵🆈🆉 "フランキー"',
+                            'VLADIMIR PUTIN',
                             style: TextStyle(
                               fontSize: 26,
                               fontWeight: FontWeight.w900,
@@ -2040,7 +2040,7 @@ class _ControllerPageState extends State<ControllerPage> {
             _drawerSectionTitle("Developer"),
             ListTile(
               leading: Icon(Icons.code_rounded, color: AppColors.textFaint(isDark)),
-              title: Text('🅵🆈🆉 "フランキー"', style: TextStyle(color: AppColors.text(isDark), fontWeight: FontWeight.w700)),
+              title: Text("VLADIMIR PUTIN", style: TextStyle(color: AppColors.text(isDark), fontWeight: FontWeight.w700)),
               subtitle: Text("Developer aplikasi & firmware", style: TextStyle(color: AppColors.textFaint(isDark), fontSize: 11)),
             ),
             ListTile(
@@ -2118,7 +2118,7 @@ class _ControllerPageState extends State<ControllerPage> {
           ),
           const SizedBox(width: 10),
           Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            const _ShimmerTitle(text: '🅵🆈🆉 "フランキー"'),
+            const _ShimmerTitle(text: 'VLADIMIR PUTIN'),
             Text('GAMING CONTROL • 2026', style: TextStyle(color: AppColors.textFaint(isDark), fontSize: 8, letterSpacing: 1.4)),
           ]),
         ]),
@@ -2212,7 +2212,6 @@ class _ControllerPageState extends State<ControllerPage> {
       _tickerName('VLADIMIR PUTIN'),
       _tickerName('FERN'),
       _tickerName('CHODOX'),
-      _tickerName('🅵🆈🆉 "フランキー"'),
     ];
     return Row(mainAxisSize: MainAxisSize.min, children: [
       for (int i = 0; i < items.length; i++) ...[
@@ -2417,6 +2416,13 @@ class _ControllerPageState extends State<ControllerPage> {
       _rgbButton(isDark, 'RUN', 'running', Icons.motion_photos_on_rounded),
       _rgbButton(isDark, 'DISCO', 'disco', Icons.celebration_rounded),
       _rgbButton(isDark, 'BOUNCE', 'bounce', Icons.swap_horiz_rounded),
+    ]),
+    const SizedBox(height: 8),
+    Row(children: [
+      _rgbButton(isDark, 'KNIGHT', 'knight', Icons.remove_red_eye_rounded),
+      _rgbButton(isDark, 'FIRE', 'fire', Icons.local_fire_department_rounded),
+      _rgbButton(isDark, 'CHASE', 'chase', Icons.arrow_forward_rounded),
+      _rgbButton(isDark, 'WAVE', 'colorwave', Icons.waves_rounded),
     ]),
   ]));
 
@@ -2764,31 +2770,22 @@ class _RunningMarqueeState extends State<_RunningMarquee> with SingleTickerProvi
   @override
   Widget build(BuildContext context) {
     if (!_measured) {
-      // Bug lama: Container ini kena tight-constraint selebar bar ticker
-      // (bukan selebar asli kontennya), jadi _contentWidth yang terukur
-      // salah -> titik "nyambung ulang" meleset -> keliatan loncat tiap
-      // 1 putaran. IntrinsicWidth memaksa pengukuran pakai lebar ASLI
-      // konten, lepas dari constraint parent.
+      // Lewat sekali secara transparan cuma untuk mengukur lebar konten
+      // sebelum animasi berjalan sungguhan.
       return Opacity(
         opacity: 0,
-        child: IntrinsicWidth(
-          child: Container(key: _measureKey, child: widget.child),
-        ),
+        child: Container(key: _measureKey, child: widget.child),
       );
     }
     return ClipRect(
-      child: UnconstrainedBox(
-        alignment: Alignment.centerLeft,
-        clipBehavior: Clip.none,
-        child: Transform.translate(
-          offset: Offset(_offset, 0),
-          child: Row(mainAxisSize: MainAxisSize.min, children: [
-            widget.child,
-            SizedBox(width: widget.gap),
-            widget.child, // salinan kedua -> transisi loop terlihat nyambung/mulus
-            SizedBox(width: widget.gap),
-          ]),
-        ),
+      child: Transform.translate(
+        offset: Offset(_offset, 0),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          widget.child,
+          SizedBox(width: widget.gap),
+          widget.child, // salinan kedua -> transisi loop terlihat nyambung/mulus
+          SizedBox(width: widget.gap),
+        ]),
       ),
     );
   }
