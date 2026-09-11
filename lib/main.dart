@@ -16,6 +16,7 @@ import 'notification_service.dart';
 import 'backup_service.dart';
 import 'history_page.dart';
 import 'schedule_page.dart';
+import 'device_specs_page.dart';
 
 // ---- Basic Auth untuk endpoint HTTP ESP32 yang mengubah state ----
 // Harus SAMA PERSIS dengan HTTP_AUTH_USER / HTTP_AUTH_PASS di firmware.ino.
@@ -493,15 +494,19 @@ class _ColorWheelState extends State<_ColorWheel> {
     final angleRad = hsv.hue * pi / 180.0;
     final dist = hsv.saturation * radius;
     final thumbOffset = Offset(radius + dist * cos(angleRad) - 10, radius + dist * sin(angleRad) - 10);
-    return GestureDetector(
+    // PENTING: sebelumnya pakai GestureDetector(onPan...) - itu gesture "pan"
+    // semantik yang ikut rebutan di gesture arena Flutter sama drag vertikal
+    // ListView di sekitarnya. Untuk drag ke arah yang condong vertikal,
+    // ListView sering "menang" duluan (recognizer-nya lebih cepat declare diri
+    // menang), jadi yang kegeser malah halaman, bukan titik warnanya.
+    // Listener pakai RAW pointer event yang TIDAK ikut arena sama sekali -
+    // jadi titiknya dijamin selalu ngikutin jari persis, kapan pun disentuh,
+    // nggak peduli ada ListView/scroll di sekitarnya.
+    return Listener(
       behavior: HitTestBehavior.opaque,
-      onPanStart: (d) => _handlePan(d.localPosition),
-      onPanUpdate: (d) => _handlePan(d.localPosition),
-      onPanEnd: (_) => widget.onChangeEnd(widget.color),
-      onTapUp: (d) {
-        _handlePan(d.localPosition);
-        widget.onChangeEnd(widget.color);
-      },
+      onPointerDown: (e) => _handlePan(e.localPosition),
+      onPointerMove: (e) => _handlePan(e.localPosition),
+      onPointerUp: (_) => widget.onChangeEnd(widget.color),
       child: SizedBox(
         width: widget.size, height: widget.size,
         child: Stack(children: [
@@ -2375,6 +2380,19 @@ class _ControllerPageState extends State<ControllerPage> {
                 _showBackupDialog();
               },
             ),
+            ListTile(
+              leading: Icon(Icons.smartphone_rounded, color: AppColors.textFaint(isDark)),
+              title: Text("Spesifikasi HP", style: TextStyle(color: AppColors.text(isDark))),
+              subtitle: Text("Jaringan, baterai, performa, refresh rate live",
+                  style: TextStyle(color: AppColors.textFaint(isDark), fontSize: 11)),
+              onTap: () {
+                Navigator.pop(context);
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => DeviceSpecsPage(accentColor: accentColor)),
+                );
+              },
+            ),
             Divider(color: AppColors.divider(isDark)),
             _drawerSectionTitle("Tampilan"),
             Padding(
@@ -2815,14 +2833,11 @@ class _ControllerPageState extends State<ControllerPage> {
   );
 
   Widget _nexusRgbCard(bool isDark) {
-    // Mode bawaan: warna/efek tetap default firmware.
-    // Hanya speed + brightness yang tersedia untuk mode-mode ini.
-    const defaultModes = {'static', 'running', 'disco', 'bounce'};
+    // Mode yang boleh diatur speed + brightness-nya.
     const speedControlledModes = {'running', 'disco', 'bounce', 'knight', 'fire', 'chase', 'colorwave'};
     const colorModes = {'knight', 'fire', 'chase', 'colorwave', 'custom'};
     final showSpeedSlider = speedControlledModes.contains(ledMode);
     final showColorWheel = colorModes.contains(ledMode);
-    final isDefaultMode = defaultModes.contains(ledMode);
 
     return _nexusCard(isDark, child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       _nexusSectionTitle(isDark, 'RGB ENGINE', 'Efek LED dari firmware ESP32'),
@@ -2906,13 +2921,6 @@ class _ControllerPageState extends State<ControllerPage> {
           _rgbValueChip(isDark, 'G', customColor.green, const Color(0xFF44FF66)),
           _rgbValueChip(isDark, 'B', customColor.blue, const Color(0xFF4488FF)),
         ]),
-      ],
-      if (isDefaultMode) ...[
-        const SizedBox(height: 4),
-        Padding(
-          padding: const EdgeInsets.only(top: 4),
-          child: Text('MODE DEFAULT • warna bawaan efek', style: TextStyle(color: AppColors.textFaint(isDark), fontSize: 8, letterSpacing: .7)),
-        ),
       ],
       const SizedBox(height: 14),
       Divider(color: AppColors.textFaint(isDark).withOpacity(.15), height: 1),
