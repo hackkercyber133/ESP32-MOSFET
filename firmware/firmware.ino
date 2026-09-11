@@ -49,9 +49,6 @@ volatile uint32_t fanTachPulseCount = 0;
 unsigned int fanRpm = 0;
 unsigned long lastFanRpmCalc = 0;
 
-// Kecepatan animasi LED (0-100), cuma dipakai mode knight/fire/chase/
-// colorwave (yang lain pakai timing tetap seperti semula). 50 = kecepatan
-// default/original, <50 lebih lambat, >50 lebih cepat - lihat ledStepDelay().
 int ledSpeedPercent = 50;
 
 void setLedSpeed(int percent) {
@@ -63,11 +60,6 @@ void setLedSpeed(int percent) {
   }
 }
 
-// Skala delay dasar tiap mode sesuai ledSpeedPercent. Di speed=50 (default)
-// hasilnya = baseMs (persis kecepatan original sebelum fitur ini ada).
-// speed=100 -> delay dikali ~0.18 (jauh lebih cepat). speed=1 -> delay
-// dikali ~1.8 (lebih lambat). Dibatasi minimum 4ms biar gak jadi terlalu
-// cepat sampai membebani loop() / bikin strip.show() ketimpa-timpa.
 unsigned long ledStepDelay(unsigned long baseMs) {
   float factor = (110.0f - (float)ledSpeedPercent) / 60.0f;
   unsigned long scaled = (unsigned long)((float)baseMs * factor);
@@ -75,10 +67,7 @@ unsigned long ledStepDelay(unsigned long baseMs) {
   return scaled;
 }
 
-// Kecerahan LED (0-100%, disimpan sebagai persen biar gampang ditampilkan
-// di app). Sebelumnya di-hardcode strip.setBrightness(80) - sekarang bisa
-// diatur dari app lewat slider "Brightness".
-int ledBrightnessPercent = 31; // ~80/255, setara nilai default lama
+int ledBrightnessPercent = 31;
 
 void setLedBrightness(int percent) {
   if (percent < 0) percent = 0;
@@ -91,22 +80,20 @@ void setLedBrightness(int percent) {
   }
 }
 
-// Warna custom (dari color wheel di app) - dipakai saat ledMode == "custom".
 uint8_t customR = 255, customG = 255, customB = 255;
 
-void applyLedMode(String mode); // forward decl, dipakai setCustomColor di bawah
+void applyLedMode(String mode);
 
 void setCustomColor(uint8_t r, uint8_t g, uint8_t b) {
+  // Warna ini bersifat GLOBAL: tidak lagi memaksa LED pindah ke mode custom.
+  // Efek yang sedang aktif akan langsung memakai warna baru pada frame berikutnya.
   customR = r; customG = g; customB = b;
   uint32_t packed = ((uint32_t)r << 16) | ((uint32_t)g << 8) | b;
   if (prefs.getUInt("customColor", 0xFFFFFFu) != packed) {
     prefs.putUInt("customColor", packed);
   }
-  if (ledMode != "custom") {
-    applyLedMode("custom");
-  } else {
-    for (int i = 0; i < NUM_LEDS; i++) strip.setPixelColor(i, strip.Color(customR, customG, customB));
-    strip.show();
+  if (ledMode != "off") {
+    applyLedMode(ledMode);
   }
 }
 
@@ -354,7 +341,7 @@ bool ch224Begin() {
                : i2cDeviceAcks(CH224_ADDR_SECONDARY) ? CH224_ADDR_SECONDARY
                : 0;
 
-  if (addr == 0) return false; 
+  if (addr == 0) return false;
 
   CH224X1 = new CH224X_I2C(Wire, addr, PG_PIN);
   ch224Addr = addr;
@@ -362,7 +349,7 @@ bool ch224Begin() {
   if (!beginOk) {
     Serial.println("CH224A ACK di I2C tapi begin() library gagal - tetap dipakai (kemungkinan PG pin belum stabil).");
   }
-  return true; 
+  return true;
 }
 
 void scanI2CBus() {
@@ -390,6 +377,15 @@ void scanI2CBus() {
 #define NUM_LEDS 30
 Adafruit_NeoPixel strip(NUM_LEDS, PIN_LED_DATA, NEO_GRB + NEO_KHZ800);
 String ledMode = "off";
+
+// Terapkan warna global dengan faktor intensitas 0..255.
+uint32_t ledColorScaled(uint8_t intensity = 255) {
+  return strip.Color(
+    ((uint16_t)customR * intensity) / 255,
+    ((uint16_t)customG * intensity) / 255,
+    ((uint16_t)customB * intensity) / 255
+  );
+}
 String lastLedEffect = "running";
 unsigned long lastLedStep = 0;
 uint16_t rainbowStep = 0;
@@ -457,10 +453,6 @@ NimBLECharacteristic* pCharacteristic = nullptr;
 volatile bool bleWritePending = false;
 portMUX_TYPE bleMux = portMUX_INITIALIZER_UNLOCKED;
 
-// Perintah masuk dipecah app jadi beberapa write, masing-masing diawali
-// header 2 byte [chunkIndex, totalChunks] - sama seperti pola yang dipakai
-// publishStatusBLE() untuk arah sebaliknya. Di sini kita sambung ulang
-// sebelum di-parse sebagai JSON (lihat komentar lengkap di publishStatusBLE).
 #define BLE_RX_BUFFER_SIZE 3072
 char bleRxAssembly[BLE_RX_BUFFER_SIZE];
 uint16_t bleRxAssemblyLen = 0;
@@ -470,7 +462,7 @@ uint8_t bleRxReceivedCount = 0;
 char bleCommandBuf[BLE_RX_BUFFER_SIZE] = {0};
 volatile uint16_t bleCommandLen = 0;
 
-bool authPassSentThisSession = false; // dipakai publishStatusBLE(), direset tiap konek baru
+bool authPassSentThisSession = false;
 
 class MyServerCallbacks : public NimBLEServerCallbacks {
   void onConnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo) override {
@@ -497,7 +489,7 @@ class MyServerCallbacks : public NimBLEServerCallbacks {
 class MyCharacteristicCallbacks : public NimBLECharacteristicCallbacks {
   void onWrite(NimBLECharacteristic* characteristic, NimBLEConnInfo& connInfo) override {
     std::string value = characteristic->getValue();
-    if (value.size() < 2) return; // minimal harus ada header 2 byte [chunkIndex, totalChunks]
+    if (value.size() < 2) return;
     uint8_t idx = (uint8_t)value[0];
     uint8_t total = (uint8_t)value[1];
     if (total == 0) total = 1;
@@ -510,8 +502,7 @@ class MyCharacteristicCallbacks : public NimBLECharacteristicCallbacks {
       bleRxReceivedCount = 0;
     }
     if (idx != bleRxReceivedCount || total != bleRxExpectedTotal) {
-      // Paket keselip / urutan tidak nyambung - buang, tunggu paket index 0 berikutnya
-      // daripada nekat sambung JSON yang pasti rusak.
+
       bleRxAssemblyLen = 0;
       bleRxExpectedTotal = 0;
       bleRxReceivedCount = 0;
@@ -582,9 +573,9 @@ void applyLedMode(String mode) {
     strip.clear();
     strip.show();
   } else if (mode == "static") {
+    // STATIC juga mengikuti warna global.
     for (int i = 0; i < NUM_LEDS; i++) {
-      int hue = (i * 256 / NUM_LEDS) & 255;
-      strip.setPixelColor(i, wheelColor(hue));
+      strip.setPixelColor(i, ledColorScaled());
     }
     strip.show();
   } else if (mode == "custom") {
@@ -610,9 +601,10 @@ void handleLedAnimation() {
   if (ledMode == "running") {
     if (millis() - lastLedStep < 20) return;
     lastLedStep = millis();
+    // RUN tetap bergerak, tetapi memakai warna global sebagai warna utama.
     for (int i = 0; i < NUM_LEDS; i++) {
-      int hue = ((i * 256 / NUM_LEDS) + rainbowStep) & 255;
-      strip.setPixelColor(i, wheelColor(hue));
+      int wave = (int)(128 + 127 * sinf((i + rainbowStep) * 0.35f));
+      strip.setPixelColor(i, ledColorScaled((uint8_t)wave));
     }
     strip.show();
     rainbowStep += 3;
@@ -621,7 +613,9 @@ void handleLedAnimation() {
     if (millis() - lastLedStep < 120) return;
     lastLedStep = millis();
     for (int i = 0; i < NUM_LEDS; i++) {
-      strip.setPixelColor(i, strip.Color(random(0, 256), random(0, 256), random(0, 256)));
+      // DISCO tetap acak, tetapi variasinya berasal dari warna global.
+      uint8_t intensity = random(70, 256);
+      strip.setPixelColor(i, ledColorScaled(intensity));
     }
     strip.show();
   } else if (ledMode == "bounce") {
@@ -633,18 +627,14 @@ void handleLedAnimation() {
       int pos = bouncePos - (bounceDir * t);
       if (pos >= 0 && pos < NUM_LEDS) {
         int fade = 255 - (t * (255 / tailLen));
-        uint32_t c = wheelColor((bouncePos * 8) & 255);
-        uint8_t r = (uint8_t)(((c >> 16) & 0xFF) * fade / 255);
-        uint8_t g = (uint8_t)(((c >> 8) & 0xFF) * fade / 255);
-        uint8_t b = (uint8_t)((c & 0xFF) * fade / 255);
-        strip.setPixelColor(pos, strip.Color(r, g, b));
+        strip.setPixelColor(pos, ledColorScaled((uint8_t)fade));
       }
     }
     strip.show();
     bouncePos += bounceDir;
     if (bouncePos >= NUM_LEDS - 1 || bouncePos <= 0) bounceDir = -bounceDir;
   } else if (ledMode == "knight") {
-  	
+
     if (millis() - lastLedStep < ledStepDelay(30)) return;
     lastLedStep = millis();
     strip.clear();
@@ -653,7 +643,7 @@ void handleLedAnimation() {
       int pos = bouncePos - (bounceDir * t);
       if (pos >= 0 && pos < NUM_LEDS) {
         int fade = 255 - (t * (255 / tailLen));
-        strip.setPixelColor(pos, strip.Color(fade, 0, 0));
+        strip.setPixelColor(pos, ledColorScaled((uint8_t)fade));
       }
     }
     strip.show();
@@ -665,35 +655,28 @@ void handleLedAnimation() {
     lastLedStep = millis();
     for (int i = 0; i < NUM_LEDS; i++) {
       int flicker = random(140, 256);
-      uint8_t r = flicker;
-      uint8_t g = flicker * random(25, 90) / 100;
-      strip.setPixelColor(i, strip.Color(r, g, 0));
+      uint8_t intensity = (uint8_t)(flicker * random(55, 101) / 100);
+      strip.setPixelColor(i, ledColorScaled(intensity));
     }
     strip.show();
   } else if (ledMode == "chase") {
-    
+
     if (millis() - lastLedStep < ledStepDelay(40)) return;
     lastLedStep = millis();
     strip.clear();
-    strip.setPixelColor(bouncePos, strip.Color(0, 180, 255));
+    strip.setPixelColor(bouncePos, ledColorScaled());
     strip.show();
     bouncePos = (bouncePos + 1) % NUM_LEDS;
   } else if (ledMode == "colorwave") {
-    
+
     if (millis() - lastLedStep < ledStepDelay(30)) return;
     lastLedStep = millis();
     colorwavePhase += 0.06;
 
-    const uint8_t aR = 243, aG = 237, aB = 255;
-    const uint8_t bR = 255, bG = 0,   bB = 0;
-
     for (int i = 0; i < NUM_LEDS; i++) {
-      float wave = (sinf(i * 0.35f + colorwavePhase) + 1.0f) / 2.0f;        
-      float blend = (sinf(i * 0.18f + colorwavePhase * 0.6f) + 1.0f) / 2.0f; 
-      uint8_t r = (uint8_t)((aR * (1.0f - blend) + bR * blend) * wave);
-      uint8_t g = (uint8_t)((aG * (1.0f - blend) + bG * blend) * wave);
-      uint8_t b = (uint8_t)((aB * (1.0f - blend) + bB * blend) * wave);
-      strip.setPixelColor(i, strip.Color(r, g, b));
+      float wave = (sinf(i * 0.35f + colorwavePhase) + 1.0f) / 2.0f;
+      uint8_t intensity = (uint8_t)(35 + wave * 220);
+      strip.setPixelColor(i, ledColorScaled(intensity));
     }
     strip.show();
   }
@@ -712,9 +695,7 @@ String buildStatusJson(bool includeSecret) {
   doc["chargerWatt"] = chargerwatt;
   doc["powerGood"] = pgood;
   doc["ch224aReady"] = ch224aReady;
-  // Field ini sebelumnya HILANG (nggak pernah dikirim ke app), jadi status
-  // PD di app selalu nyangkut di default "CH224A OFFLINE" walau device
-  // sebenarnya udah nyala & voltase udah pindah.
+
   doc["pdStatus"] = pdStatus;
   doc["fanSpeed"] = fanSpeedPercent;
   doc["ledSpeed"] = ledSpeedPercent;
@@ -738,33 +719,18 @@ String buildStatusJson(bool includeSecret) {
   return jsonStr;
 }
 
-// BLE GATT notify TIDAK otomatis dipotong-sambung kalau datanya lebih
-// panjang dari MTU (beda sama operasi "read", yang memang auto-reassembly).
-// JSON status ini sudah lumayan panjang (pdStatus, fanRpm, netMode,
-// wifiConnected, httpAuthPass, dll) - kalau dikirim mentah lewat satu kali
-// notify() dan lebih panjang dari (MTU-3) byte, sisanya kepotong diam-diam
-// dan hasilnya JSON rusak di sisi app (gagal di-parse, SEMUA field jadi
-// gak keupdate - persis gejala "macet di 5V, PD gak kebaca").
-//
-// Solusinya: pecah jadi beberapa notify kecil, masing-masing diawali 2
-// byte header (index chunk, total chunk), app yang nyambung ulang. Ini
-// jauh lebih aman daripada cuma ngirit field, karena JSON pasti bakal
-// nambah panjang lagi ke depannya kalau ada fitur baru.
 #define BLE_CHUNK_SIZE 180
 
 void publishStatusBLE() {
   if (!deviceConnected || pCharacteristic == nullptr) return;
 
-  // httpAuthPass cuma perlu dikirim SEKALI per sesi koneksi (app nyimpen
-  // begitu dapat), bukan tiap 300ms selamanya - itu buang-buang bandwidth
-  // BLE yang udah pas-pasan buat field lain.
   String jsonStr = buildStatusJson(!authPassSentThisSession);
   if (!authPassSentThisSession) authPassSentThisSession = true;
 
   size_t total = jsonStr.length();
   size_t numChunks = (total + BLE_CHUNK_SIZE - 1) / BLE_CHUNK_SIZE;
   if (numChunks == 0) numChunks = 1;
-  if (numChunks > 255) numChunks = 255; // batas 1 byte di header, JSON segini panjang seharusnya gak kejadian
+  if (numChunks > 255) numChunks = 255;
 
   for (size_t i = 0; i < numChunks; i++) {
     size_t start = i * BLE_CHUNK_SIZE;
@@ -775,44 +741,29 @@ void publishStatusBLE() {
     memcpy(packet + 2, jsonStr.c_str() + start, len);
     pCharacteristic->setValue(packet, len + 2);
     pCharacteristic->notify();
-    if (numChunks > 1) delay(15); // kasih jeda kecil antar potongan biar gak ketimpa/ke-drop stack BLE-nya
+    if (numChunks > 1) delay(15);
   }
 }
 
-// ================= JADWAL OTOMATIS (tersimpan & JALAN MANDIRI di ESP32) =================
-// Sebelumnya jadwal cuma disimpan & dieksekusi di sisi APLIKASI (timer 30 detik di
-// main.dart) - begitu app ditutup / BLE-WiFi terputus, jadwal berhenti total karena
-// tidak ada yang mengirim perintah voltase lagi. Sekarang jadwal disimpan di NVS
-// (flash) ESP32 dan dicek sendiri tiap menit terlepas dari status koneksi ke app.
-//
-// Sumber waktu:
-//  - Mode WiFi: NTP (perlu internet di jaringan rumah), otomatis re-sync tiap kali
-//    ESP32 konek WiFi - termasuk otomatis setelah restart / mati lampu.
-//  - Mode Bluetooth: TIDAK ada internet sama sekali, jadi ESP32 tidak bisa tahu jam
-//    sekarang sendirian. App WAJIB mengirim jam HP (perintah "setTime") minimal
-//    sekali setelah tiap kali ESP32 nyala/restart - dilakukan otomatis oleh app
-//    begitu BLE konek. Selama ESP32 tetap menyala (tidak restart/mati listrik)
-//    setelah itu, jadwal tetap jalan sendiri walau BLE diputus / app ditutup, karena
-//    jam internal ESP32 terus berjalan lepas dari koneksi.
 #define MAX_SCHEDULES 40
 struct ScheduleRule {
   String id;
   float voltage;
   uint8_t hour;
   uint8_t minute;
-  uint8_t daysMask;       // bit0=Senin ... bit6=Minggu, cocok dgn DateTime.weekday Dart (1=Senin..7=Minggu)
+  uint8_t daysMask;
   bool enabled;
-  int16_t lastFiredYday;  // hari-dalam-tahun (0-365) terakhir jadwal ini jalan, -1 = belum pernah
+  int16_t lastFiredYday;
 };
 ScheduleRule schedules[MAX_SCHEDULES];
 int scheduleCount = 0;
 
-int dartWeekdayFromTm(int tm_wday) { // tm_wday: 0=Minggu..6=Sabtu -> dart: 1=Senin..7=Minggu
+int dartWeekdayFromTm(int tm_wday) {
   return (tm_wday == 0) ? 7 : tm_wday;
 }
 
 void setupNtpTime() {
-  // WIB = UTC+7, tanpa DST. Beberapa server dicoba biar cepat dapat salah satu.
+
   configTzTime("WIB-7", "pool.ntp.org", "time.google.com", "id.pool.ntp.org");
   Serial.println("Sinkronisasi waktu NTP dimulai (WIB, UTC+7)...");
 }
@@ -857,9 +808,6 @@ void loadSchedulesFromPrefs() {
   Serial.println(" aturan.");
 }
 
-// Dipanggil saat app mengirim perintah {"schedules":[{"id","hour","minute","voltage","days":[1..7],"enabled"}...]}
-// Mengganti seluruh daftar jadwal (full replace, sama seperti cara app menyimpan
-// jadwal di HP) dan langsung menyimpannya ke NVS supaya tetap ada walau ESP32 restart.
 void applySchedulesFromJson(JsonArray arr) {
   static ScheduleRule oldSchedules[MAX_SCHEDULES];
   int oldCount = scheduleCount;
@@ -881,8 +829,7 @@ void applySchedulesFromJson(JsonArray arr) {
         if (dv >= 1 && dv <= 7) r.daysMask |= (1 << (dv - 1));
       }
     }
-    // Kalau id-nya sama dengan jadwal lama (user cuma edit, bukan bikin baru),
-    // pertahankan lastFiredYday supaya tidak nembak dobel di hari yang sama.
+
     r.lastFiredYday = -1;
     for (int j = 0; j < oldCount; j++) {
       if (oldSchedules[j].id == r.id) { r.lastFiredYday = oldSchedules[j].lastFiredYday; break; }
@@ -896,13 +843,10 @@ void applySchedulesFromJson(JsonArray arr) {
   Serial.println(" aturan tersimpan ke NVS.");
 }
 
-// Dicek tiap loop(), tapi cuma benar-benar mengevaluasi jadwal sekali per menit
-// (dicocokkan lewat jam:menit real, bukan lewat interval millis() - supaya tidak
-// meleset walau loop() jalan ratusan kali per detik).
 void checkSchedulesAutonomous() {
   if (scheduleCount == 0) return;
   time_t now = time(nullptr);
-  if (now < 1700000000) return; // waktu belum pernah disinkronkan (NTP/setTime) - jangan eksekusi apa pun
+  if (now < 1700000000) return;
   struct tm t;
   localtime_r(&now, &t);
 
@@ -918,7 +862,7 @@ void checkSchedulesAutonomous() {
     if (!r.enabled) continue;
     if (!(r.daysMask & (1 << (weekdayDart - 1)))) continue;
     if (r.hour != t.tm_hour || r.minute != t.tm_min) continue;
-    if (r.lastFiredYday == t.tm_yday) continue; // sudah jalan hari ini
+    if (r.lastFiredYday == t.tm_yday) continue;
     r.lastFiredYday = t.tm_yday;
     changed = true;
     if (ch224aReady) {
@@ -976,8 +920,7 @@ void processCommandJson(const String& cmd) {
     applySchedulesFromJson(doc["schedules"].as<JsonArray>());
   }
   if (!doc["setTime"].isNull()) {
-    // Epoch UTC (detik) dikirim app - dipakai terutama di mode Bluetooth karena
-    // tidak ada NTP sama sekali di sana. TZ WIB-7 yang menggeser ke waktu lokal.
+
     long epoch = doc["setTime"].as<long>();
     if (epoch > 1000000000L) {
       struct timeval tv; tv.tv_sec = epoch; tv.tv_usec = 0;
@@ -1314,9 +1257,6 @@ void handleSwitchBle() {
   ESP.restart();
 }
 
-// Body raw JSON: {"schedules":[{"id":"..","hour":22,"minute":0,"voltage":5,"days":[1,2,3,4,5,6,7],"enabled":true}, ...]}
-// Dipakai app untuk mendorong daftar jadwal terbaru ke ESP32 (mode WiFi) setiap
-// kali user tambah/edit/hapus jadwal, supaya tersimpan di NVS & dieksekusi mandiri.
 void handleSetSchedulesHttp() {
   if (!checkHttpAuth()) return;
   lastAppContact = millis();
@@ -1377,7 +1317,7 @@ void startWifiControlMode(const String& ssid, const String& pass) {
     server.begin();
     udp.begin(UDP_BEACON_PORT);
     wifiControlActive = true;
-    setupNtpTime(); // supaya jadwal otomatis punya sumber waktu yang akurat & mandiri, tanpa app
+    setupNtpTime();
   } else {
     Serial.println("\nGAGAL: Tidak bisa konek WiFi dalam 15 detik, kembali ke mode Bluetooth...");
     prefs.putString("netMode", "ble");
@@ -1518,7 +1458,7 @@ void setup() {
   }
 
   registerHttpHandlers();
-  loadSchedulesFromPrefs(); // muat jadwal otomatis tersimpan - tetap ada walau habis restart/mati listrik
+  loadSchedulesFromPrefs();
 
   if (netMode == "wifi" && savedSsid.length() > 0) {
     startWifiControlMode(savedSsid, savedPass);
@@ -1558,7 +1498,7 @@ void loop() {
     server.handleClient();
   }
 
-  checkSchedulesAutonomous(); // jalan tiap loop, tapi cuma eksekusi 1x per menit - lepas dari status app
+  checkSchedulesAutonomous();
 
   if (wifiControlActive && millis() - lastBeacon > 2000) {
     sendUdpBeacon();
@@ -1617,7 +1557,7 @@ void loop() {
     updatePdStatus();
     if (ch224aReady) {
       Serial.println("CH224A terdeteksi.");
-      applyVoltage(currentSetVoltage); 
+      applyVoltage(currentSetVoltage);
     }
   }
 
