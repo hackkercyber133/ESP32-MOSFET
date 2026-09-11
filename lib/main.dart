@@ -561,6 +561,24 @@ class _ControllerPageState extends State<ControllerPage> {
       Permission.notification,
     ].request();
 
+    // Otomatis nyalakan Bluetooth begitu app dibuka, kalau ternyata lagi mati.
+    // CATATAN: ini cuma bisa jalan di ANDROID - iOS tidak mengizinkan aplikasi
+    // manapun menyalakan Bluetooth secara programatik (pembatasan dari Apple
+    // sendiri, bukan dari flutter_blue_plus), jadi di iOS baris ini di-skip
+    // dan user tetap harus nyalain manual lewat Control Center/Settings.
+    if (Platform.isAndroid) {
+      try {
+        final state = await FlutterBluePlus.adapterState.first.timeout(const Duration(seconds: 2));
+        if (state != BluetoothAdapterState.on) {
+          await FlutterBluePlus.turnOn();
+        }
+      } catch (_) {
+        // Gagal deteksi/nyalain (mis. permission ditolak user, atau device
+        // tidak dukung) - biarkan saja, nanti UI tetap kasih tahu kalau BLE
+        // dibutuhkan tapi mati.
+      }
+    }
+
     await _loadPairedCoolers();
     await _loadAccentColor();
     _schedules = await ScheduleService.loadAll();
