@@ -114,7 +114,9 @@ class SplashScreen extends StatefulWidget {
 }
 
 class _SplashScreenState extends State<SplashScreen> with TickerProviderStateMixin {
-  // Controller utama: menjalankan urutan animasi satu-kali selama 5.2 detik.
+  // Controller utama: menjalankan urutan animasi satu-kali selama ~1.8 detik.
+  // (Sebelumnya ke-tulis 15000ms/15 detik - salah ketik kelebihan nol, itu
+  // yang bikin loading awal kerasa lama banget.)
   late final AnimationController _mainCtrl;
   // Controller loop: partikel, cincin energi, dan efek "shine" berjalan terus-menerus.
   late final AnimationController _loopCtrl;
@@ -135,13 +137,13 @@ class _SplashScreenState extends State<SplashScreen> with TickerProviderStateMix
       );
     });
 
-    _mainCtrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 15000));
+    _mainCtrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 1800));
     _loopCtrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 5000))..repeat();
 
     _mainCtrl.forward();
     _mainCtrl.addStatusListener((s) {
       if (s == AnimationStatus.completed) {
-        Future.delayed(const Duration(milliseconds: 400), _goToApp);
+        Future.delayed(const Duration(milliseconds: 150), _goToApp);
       }
     });
   }
@@ -562,9 +564,15 @@ class _ControllerPageState extends State<ControllerPage> {
     await _loadPairedCoolers();
     await _loadAccentColor();
     _schedules = await ScheduleService.loadAll();
+    // Setiap kali jadwal disimpan (tambah/edit/hapus/toggle/import) di mana
+    // pun di app, otomatis dorong salinan terbaru ke ESP32 supaya dia yang
+    // eksekusi mandiri - lihat ScheduleService.saveAll().
+    ScheduleService.onSaved = _syncSchedulesToDevice;
 
-    // Cek jadwal tiap 30 detik, cek status offline tiap 1 menit — cukup
-    // ringan tapi tetap responsif untuk kasus "jam 22:00 turun ke 5V".
+    // Jadwal sekarang dieksekusi MANDIRI oleh ESP32 (tersimpan di NVS-nya),
+    // jadi timer ini bukan lagi yang menjalankan perubahan voltase - cuma
+    // dipakai sebagai pengingat notifikasi lokal saat app kebetulan sedang
+    // dibuka. Cek status offline tetap tiap 1 menit.
     _scheduleTimer = Timer.periodic(const Duration(seconds: 30), (_) => _checkSchedules());
     _offlineCheckTimer = Timer.periodic(const Duration(minutes: 1), (_) => _checkOfflineNotification());
 
@@ -573,7 +581,11 @@ class _ControllerPageState extends State<ControllerPage> {
     }
   }
 
-  // ===== JADWAL OTOMATIS: dicek berkala, kirim perintah kalau waktunya cocok =====
+  // ===== JADWAL OTOMATIS: eksekusi sebenarnya sudah dilakukan MANDIRI oleh =====
+  // ===== ESP32 (lihat checkSchedulesAutonomous() di firmware). Fungsi ini  =====
+  // ===== cuma pengingat notifikasi lokal kalau app kebetulan sedang dibuka =====
+  // ===== saat jadwal itu tiba - TIDAK mengirim perintah voltase lagi, biar =====
+  // ===== tidak ada 2 sumber yang sama-sama mengeksekusi.                  =====
   void _checkSchedules() {
     if (activeCooler == null || _schedules.isEmpty) return;
     final now = DateTime.now();
@@ -586,7 +598,6 @@ class _ControllerPageState extends State<ControllerPage> {
       if (r.lastFiredDateKey == todayKey) continue; // sudah jalan hari ini
       r.lastFiredDateKey = todayKey;
       changed = true;
-      sendVoltage(r.voltage);
       NotificationService.show(
         id: r.id.hashCode,
         title: "Jadwal Otomatis",
@@ -594,6 +605,49 @@ class _ControllerPageState extends State<ControllerPage> {
       );
     }
     if (changed) ScheduleService.saveAll(_schedules);
+  }
+
+  // ===== Dorong seluruh jadwal cooler AKTIF ke ESP32 supaya tersimpan di =====
+  // ===== NVS-nya dan dieksekusi mandiri, lepas dari status koneksi app. =====
+  Future<void> _syncSchedulesToDevice(List<ScheduleRule> all) async {
+    if (activeCooler == null) return;
+    final forThisCooler = all.where((r) => r.coolerId == activeCooler!.id).toList();
+    final payload = {
+      "schedules": forThisCooler
+          .map((r) => {
+                "id": r.id,
+                "hour": r.hour,
+                "minute": r.minute,
+                "voltage": r.voltage,
+                "days": r.days,
+                "enabled": r.enabled,
+              })
+          .toList(),
+    };
+    if (connectionMode == "WiFi") {
+      if (_wifiIp == null) return;
+      try {
+        final headers = {...esp32AuthHeaders(activeCooler), "Content-Type": "application/json"};
+        await http
+            .post(Uri.http(_wifiIp!, "/schedules"), headers: headers, body: jsonEncode(payload))
+            .timeout(const Duration(seconds: 5));
+      } catch (_) {
+        // Device sedang tidak terjangkau - tidak apa, akan disinkronkan lagi
+        // saat konek berikutnya (dipanggil ulang dari connectLocalWifi/connectBLE).
+      }
+    } else {
+      if (!bleConnected) return;
+      await _writeControlBLE(payload);
+    }
+  }
+
+  // ===== Kirim jam HP saat ini ke ESP32 (mode Bluetooth) =====
+  // Mode Bluetooth tidak ada akses internet sama sekali di ESP32-nya, jadi dia
+  // tidak bisa tahu jam sekarang sendirian seperti mode WiFi (yang pakai NTP).
+  // Wajib dipanggil tiap kali BLE baru konek supaya jadwal otomatis tetap akurat.
+  Future<void> _pushTimeToDevice() async {
+    final epochSeconds = DateTime.now().toUtc().millisecondsSinceEpoch ~/ 1000;
+    await _writeControlBLE({"setTime": epochSeconds});
   }
 
   // ===== NOTIFIKASI COOLER OFFLINE =====
@@ -740,6 +794,8 @@ class _ControllerPageState extends State<ControllerPage> {
   }
 
   // ===== WIFI LOKAL (tanpa broker/internet, langsung HTTP+UDP ke ESP32 di 1 jaringan) =====
+  bool _wifiSchedulesSyncedThisSession = false;
+
   void connectLocalWifi() async {
     if (activeCooler == null) {
       _showSnack("⚠️ Pilih atau tambah cooler dulu");
@@ -748,6 +804,7 @@ class _ControllerPageState extends State<ControllerPage> {
     // Coba IP terakhir yang diketahui dulu (kalau ada) sambil menunggu beacon baru masuk.
     _wifiIp = activeCooler!.lastIp;
     _consecutiveWifiPollFailures = 0;
+    _wifiSchedulesSyncedThisSession = false;
     await _startUdpDiscovery();
     _wifiPollTimer?.cancel();
     _wifiPollTimer = Timer.periodic(Duration(seconds: 3), (_) => _pollWifiStatus());
@@ -864,6 +921,12 @@ class _ControllerPageState extends State<ControllerPage> {
         _wifiSetupSawOnline = true;
         if (activeCooler != null) {
           HistoryService.recordStatus(coolerId: activeCooler!.id, online: true, voltage: setVolt);
+        }
+        // ESP32 mode WiFi dapat waktu sendiri lewat NTP, jadi cukup dorong
+        // jadwal (bukan jam) - sekali saja per sesi koneksi, bukan tiap 3 detik.
+        if (!_wifiSchedulesSyncedThisSession) {
+          _wifiSchedulesSyncedThisSession = true;
+          _syncSchedulesToDevice(_schedules);
         }
       } else {
         _consecutiveWifiPollFailures++;
@@ -1049,6 +1112,11 @@ class _ControllerPageState extends State<ControllerPage> {
           }
         }
       }
+      // Mode Bluetooth tidak punya akses internet di ESP32-nya, jadi jam &
+      // jadwal WAJIB didorong ulang tiap kali baru konek supaya jadwal
+      // otomatis tetap akurat walau nanti BLE-nya diputus / app ditutup.
+      await _pushTimeToDevice();
+      await _syncSchedulesToDevice(_schedules);
     } catch (e) {
       setState(() {
         bleConnected = false;
