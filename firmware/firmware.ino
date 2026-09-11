@@ -75,6 +75,41 @@ unsigned long ledStepDelay(unsigned long baseMs) {
   return scaled;
 }
 
+// Kecerahan LED (0-100%, disimpan sebagai persen biar gampang ditampilkan
+// di app). Sebelumnya di-hardcode strip.setBrightness(80) - sekarang bisa
+// diatur dari app lewat slider "Brightness".
+int ledBrightnessPercent = 31; // ~80/255, setara nilai default lama
+
+void setLedBrightness(int percent) {
+  if (percent < 0) percent = 0;
+  if (percent > 100) percent = 100;
+  ledBrightnessPercent = percent;
+  strip.setBrightness(map(percent, 0, 100, 0, 255));
+  strip.show();
+  if (prefs.getInt("ledBright", -1) != ledBrightnessPercent) {
+    prefs.putInt("ledBright", ledBrightnessPercent);
+  }
+}
+
+// Warna custom (dari color wheel di app) - dipakai saat ledMode == "custom".
+uint8_t customR = 255, customG = 255, customB = 255;
+
+void applyLedMode(String mode); // forward decl, dipakai setCustomColor di bawah
+
+void setCustomColor(uint8_t r, uint8_t g, uint8_t b) {
+  customR = r; customG = g; customB = b;
+  uint32_t packed = ((uint32_t)r << 16) | ((uint32_t)g << 8) | b;
+  if (prefs.getUInt("customColor", 0xFFFFFFu) != packed) {
+    prefs.putUInt("customColor", packed);
+  }
+  if (ledMode != "custom") {
+    applyLedMode("custom");
+  } else {
+    for (int i = 0; i < NUM_LEDS; i++) strip.setPixelColor(i, strip.Color(customR, customG, customB));
+    strip.show();
+  }
+}
+
 #define FAN_PWM_PIN   2
 #define FAN_TACH_PIN  3
 #define FAN_PWM_CHANNEL   0
@@ -538,7 +573,8 @@ float colorwavePhase = 0;
 void applyLedMode(String mode) {
   if (mode != "off" && mode != "static" && mode != "running" &&
       mode != "disco" && mode != "bounce" && mode != "knight" &&
-      mode != "fire" && mode != "chase" && mode != "colorwave") return;
+      mode != "fire" && mode != "chase" && mode != "colorwave" &&
+      mode != "custom") return;
   ledMode = mode;
   if (mode != "off") lastLedEffect = mode;
 
@@ -549,6 +585,11 @@ void applyLedMode(String mode) {
     for (int i = 0; i < NUM_LEDS; i++) {
       int hue = (i * 256 / NUM_LEDS) & 255;
       strip.setPixelColor(i, wheelColor(hue));
+    }
+    strip.show();
+  } else if (mode == "custom") {
+    for (int i = 0; i < NUM_LEDS; i++) {
+      strip.setPixelColor(i, strip.Color(customR, customG, customB));
     }
     strip.show();
   } else if (mode == "bounce" || mode == "knight") {
@@ -677,6 +718,10 @@ String buildStatusJson(bool includeSecret) {
   doc["pdStatus"] = pdStatus;
   doc["fanSpeed"] = fanSpeedPercent;
   doc["ledSpeed"] = ledSpeedPercent;
+  doc["ledBrightness"] = ledBrightnessPercent;
+  char customHex[7];
+  snprintf(customHex, sizeof(customHex), "%02X%02X%02X", customR, customG, customB);
+  doc["customColor"] = customHex;
   doc["fanRpm"] = fanRpm;
   doc["peltier"] = peltierOn;
   doc["netMode"] = netMode;
@@ -904,6 +949,20 @@ void processCommandJson(const String& cmd) {
   if (doc["ledSpeed"].is<int>()) {
     setLedSpeed(doc["ledSpeed"]);
     triggerCmdBlink();
+  }
+  if (doc["ledBrightness"].is<int>()) {
+    setLedBrightness(doc["ledBrightness"]);
+    triggerCmdBlink();
+  }
+  if (doc["customColor"].is<const char*>()) {
+    String hex = doc["customColor"].as<String>();
+    hex.trim();
+    if (hex.startsWith("#")) hex = hex.substring(1);
+    if (hex.length() == 6) {
+      long val = strtol(hex.c_str(), nullptr, 16);
+      setCustomColor((val >> 16) & 0xFF, (val >> 8) & 0xFF, val & 0xFF);
+      triggerCmdBlink();
+    }
   }
   if (doc["fanSpeed"].is<int>()) {
     setFanSpeed(doc["fanSpeed"]);
@@ -1236,6 +1295,8 @@ void handleSetCmd() {
   if (server.hasArg("ledMode")) doc["ledMode"] = server.arg("ledMode");
   if (server.hasArg("fanSpeed")) doc["fanSpeed"] = server.arg("fanSpeed").toInt();
   if (server.hasArg("ledSpeed")) doc["ledSpeed"] = server.arg("ledSpeed").toInt();
+  if (server.hasArg("ledBrightness")) doc["ledBrightness"] = server.arg("ledBrightness").toInt();
+  if (server.hasArg("customColor")) doc["customColor"] = server.arg("customColor");
   if (server.hasArg("peltier")) doc["peltier"] = (server.arg("peltier") == "1" || server.arg("peltier") == "true");
   if (server.hasArg("action")) doc["action"] = server.arg("action");
   String cmd;
@@ -1414,6 +1475,11 @@ void setup() {
   int savedFanSpeed = prefs.getInt("fanSpeed", 100);
   String savedLedMode = prefs.getString("ledMode", "off");
   int savedLedSpeed = prefs.getInt("ledSpeed", 50);
+  int savedLedBrightness = prefs.getInt("ledBright", 31);
+  uint32_t savedCustomColor = prefs.getUInt("customColor", 0xFFFFFFu);
+  customR = (savedCustomColor >> 16) & 0xFF;
+  customG = (savedCustomColor >> 8) & 0xFF;
+  customB = savedCustomColor & 0xFF;
 
   pinMode(PIN_ONBOARD_LED, OUTPUT);
   onboardLedWrite(false);
@@ -1437,7 +1503,8 @@ void setup() {
   updatePdStatus();
 
   strip.begin();
-  strip.setBrightness(80);
+  ledBrightnessPercent = savedLedBrightness;
+  strip.setBrightness(map(savedLedBrightness, 0, 100, 0, 255));
   strip.show();
   applyLedMode(savedLedMode);
 
