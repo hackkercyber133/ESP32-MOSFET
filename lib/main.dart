@@ -2796,7 +2796,7 @@ class _ControllerPageState extends State<ControllerPage> {
   Widget _nexusFanControl(bool isDark) {
     final c = Colors.cyanAccent;
     return _nexusCard(isDark, child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      _nexusSectionTitle(isDark, 'FAN CONTROL', 'PWM 4-pin • 12V'),
+      _nexusSectionTitle(isDark, 'FAN CONTROL', 'PWM 4-pin • 12V konstan'),
       const SizedBox(height: 12),
       Row(children: [
         Icon(Icons.air_rounded, color: c, size: 18),
@@ -2838,7 +2838,7 @@ class _ControllerPageState extends State<ControllerPage> {
   Widget _nexusPeltierControl(bool isDark) {
     final c = Colors.lightBlueAccent;
     return _nexusCard(isDark, child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      _nexusSectionTitle(isDark, 'PELTIER', 'MOSFET IRLZ44N'),
+      _nexusSectionTitle(isDark, 'PELTIER', 'MOSFET IRLZ44N • low-side switch'),
       const SizedBox(height: 10),
       Row(children: [
         Icon(Icons.ac_unit_rounded, color: peltierOn ? c : AppColors.textFaint(isDark), size: 20),
@@ -2856,7 +2856,7 @@ class _ControllerPageState extends State<ControllerPage> {
   }
 
   Widget _nexusMetrics(bool isDark) => _nexusCard(isDark, child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-    _nexusSectionTitle(isDark, 'SYSTEM STATUS'),
+    _nexusSectionTitle(isDark, 'SYSTEM STATUS', 'Data dari ESP32 aktual'),
     const SizedBox(height: 14),
     Row(children: [
       Expanded(child: _metricBox(isDark, Icons.bolt, 'REQUEST', '${setVolt.toStringAsFixed(0)}V')),
@@ -2893,7 +2893,7 @@ class _ControllerPageState extends State<ControllerPage> {
     final isCustomMode = ledMode == 'custom';
     final activeWheelColor = isCustomMode ? customColor : modeColor;
     return _nexusCard(isDark, child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      _nexusSectionTitle(isDark, 'RGB ENGINE', 'Custom Efek LED'),
+      _nexusSectionTitle(isDark, 'RGB ENGINE', 'Efek LED dari firmware ESP32'),
       const SizedBox(height: 12),
       Row(children: [
         _rgbButton(isDark, 'OFF', 'off', Icons.power_settings_new_rounded),
