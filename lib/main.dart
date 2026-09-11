@@ -457,6 +457,94 @@ class _HexPainter extends CustomPainter {
   bool shouldRepaint(covariant _HexPainter oldDelegate) => false;
 }
 
+// Color wheel bundar (hue di sekeliling, saturasi dari tengah ke tepi) mirip
+// picker RGB pada umumnya - drag jari di dalam lingkaran buat pilih warna,
+// posisi lepas jari yang dikirim ke firmware (drag di tengah cuma preview
+// lokal biar gak flood BLE/WiFi tiap frame).
+class _ColorWheel extends StatefulWidget {
+  final Color color;
+  final double size;
+  final ValueChanged<Color> onChanged;
+  final ValueChanged<Color> onChangeEnd;
+  const _ColorWheel({required this.color, required this.size, required this.onChanged, required this.onChangeEnd});
+
+  @override
+  State<_ColorWheel> createState() => _ColorWheelState();
+}
+
+class _ColorWheelState extends State<_ColorWheel> {
+  void _handlePan(Offset localPos) {
+    final radius = widget.size / 2;
+    final dx = localPos.dx - radius;
+    final dy = localPos.dy - radius;
+    final dist = sqrt(dx * dx + dy * dy);
+    final clampedDist = dist > radius ? radius : dist;
+    double angle = atan2(dy, dx) * 180 / pi;
+    if (angle < 0) angle += 360;
+    final sat = radius == 0 ? 0.0 : (clampedDist / radius).clamp(0.0, 1.0);
+    final newColor = HSVColor.fromAHSV(1.0, angle, sat, 1.0).toColor();
+    widget.onChanged(newColor);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final hsv = HSVColor.fromColor(widget.color);
+    final radius = widget.size / 2;
+    final angleRad = hsv.hue * pi / 180.0;
+    final dist = hsv.saturation * radius;
+    final thumbOffset = Offset(radius + dist * cos(angleRad) - 10, radius + dist * sin(angleRad) - 10);
+    return GestureDetector(
+      onPanStart: (d) => _handlePan(d.localPosition),
+      onPanUpdate: (d) => _handlePan(d.localPosition),
+      onPanEnd: (_) => widget.onChangeEnd(widget.color),
+      onTapUp: (d) {
+        _handlePan(d.localPosition);
+        widget.onChangeEnd(widget.color);
+      },
+      child: SizedBox(
+        width: widget.size, height: widget.size,
+        child: Stack(children: [
+          CustomPaint(size: Size(widget.size, widget.size), painter: _ColorWheelPainter()),
+          Positioned(
+            left: thumbOffset.dx, top: thumbOffset.dy,
+            child: Container(
+              width: 20, height: 20,
+              decoration: BoxDecoration(
+                color: widget.color,
+                shape: BoxShape.circle,
+                border: Border.all(color: Colors.white, width: 2.5),
+                boxShadow: const [BoxShadow(color: Colors.black38, blurRadius: 4)],
+              ),
+            ),
+          ),
+        ]),
+      ),
+    );
+  }
+}
+
+class _ColorWheelPainter extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    final center = size.center(Offset.zero);
+    final radius = size.width / 2;
+    final rect = Rect.fromCircle(center: center, radius: radius);
+
+    final hueShader = SweepGradient(
+      colors: List.generate(37, (i) => HSVColor.fromAHSV(1, i * 10.0, 1, 1).toColor()),
+    ).createShader(rect);
+    canvas.drawCircle(center, radius, Paint()..shader = hueShader);
+
+    final satShader = RadialGradient(
+      colors: [Colors.white, Colors.white.withOpacity(0)],
+    ).createShader(rect);
+    canvas.drawCircle(center, radius, Paint()..shader = satShader);
+  }
+
+  @override
+  bool shouldRepaint(covariant _ColorWheelPainter oldDelegate) => false;
+}
+
 class ControllerPage extends StatefulWidget {
   @override
   _ControllerPageState createState() => _ControllerPageState();
@@ -521,6 +609,8 @@ class _ControllerPageState extends State<ControllerPage> {
   bool peltierOn = false; // ON/OFF peltier (MOSFET low-side), dari field "peltier" firmware
   String ledMode = "off"; // "off" | "static" | "running" | "disco" | "bounce"
   int ledSpeed = 50; // kecepatan animasi LED (1-100), dari field "ledSpeed" firmware - cuma berlaku utk mode knight/fire/chase/colorwave
+  int ledBrightness = 31; // kecerahan LED (0-100%), dari field "ledBrightness" firmware
+  Color customColor = Colors.white; // warna mode "custom", dari field "customColor" firmware (hex RRGGBB)
   String lastLedEffect = "running"; // efek terakhir dipilih, dipakai saat tombol ON
   String uptime = "00:00:00";
   String status = "🔴 Offline";
@@ -875,6 +965,8 @@ class _ControllerPageState extends State<ControllerPage> {
     final rawFanRpm = data['fanRpm'];
     final rawPeltier = data['peltier'];
     final rawLedSpeed = data['ledSpeed'];
+    final rawLedBrightness = data['ledBrightness'];
+    final rawCustomColor = data['customColor'];
 
     if (rawVoltage is num) setVolt = rawVoltage.toDouble();
     if (rawPowerGood is bool) powerGood = rawPowerGood;
@@ -885,6 +977,11 @@ class _ControllerPageState extends State<ControllerPage> {
     if (rawFanRpm is num) fanRpm = rawFanRpm.toInt();
     if (rawPeltier is bool) peltierOn = rawPeltier;
     if (rawLedSpeed is num) ledSpeed = rawLedSpeed.toInt();
+    if (rawLedBrightness is num) ledBrightness = rawLedBrightness.toInt();
+    if (rawCustomColor is String && rawCustomColor.length == 6) {
+      final parsed = int.tryParse(rawCustomColor, radix: 16);
+      if (parsed != null) customColor = Color(0xFF000000 | parsed);
+    }
     ledMode = data['ledMode'] ?? ledMode;
     uptime = data['uptime'] ?? uptime;
     if (ledMode != "off") lastLedEffect = ledMode;
@@ -1106,11 +1203,17 @@ class _ControllerPageState extends State<ControllerPage> {
           connectionPriorityRequest: ConnectionPriority.high,
         );
       } catch (_) {}
-      // MTU lebih besar = command JSON muat sekali kirim, tanpa fragmentasi.
-      // Dinaikkan dari 185 ke 247 (maksimum yang didukung NimBLE default) —
-      // JSON status sekarang lebih panjang sejak ada field httpAuthPass.
+      // MTU lebih besar = notify status JSON muat sekali kirim, tanpa terpotong.
+      // KOREKSI: 247 sebelumnya dikira batas maksimum NimBLE, itu keliru -
+      // batas default NimBLE-Arduino sebenarnya 517 byte (batas spek BLE
+      // ATT_MTU). JSON status sekarang bisa tembus 300+ byte (pdStatus,
+      // fanSpeed/fanRpm, ledSpeed, ledBrightness, customColor, httpAuthPass,
+      // dst) padahal usable payload di MTU 247 cuma 244 byte (MTU - 3 byte
+      // header ATT) - notify BLE (beda dari HTTP, tidak ada reassembly)
+      // kepotong di tengah, gagal di-decode app, app nyangkut di data lama.
+      // Naikkan ke 512 (margin aman di bawah batas 517) supaya selalu muat.
       try {
-        await device.requestMtu(247);
+        await device.requestMtu(512);
       } catch (_) {}
 
       setState(() {
@@ -1394,6 +1497,109 @@ class _ControllerPageState extends State<ControllerPage> {
     if (ok) {
       setState(() => ledSpeed = percent);
     } else {
+      _showSnack("❌ Gagal mengirim perintah ke perangkat");
+    }
+  }
+
+  void sendLedBrightness(int percent) {
+    if (activeCooler == null) {
+      _showSnack("⚠️ Pilih atau tambah cooler dulu");
+      return;
+    }
+    percent = percent.clamp(0, 100);
+    if (connectionMode == "WiFi") {
+      sendLedBrightnessLocalWifi(percent);
+    } else {
+      sendLedBrightnessBLE(percent);
+    }
+  }
+
+  void sendLedBrightnessLocalWifi(int percent) async {
+    if (_wifiIp == null) {
+      _showSnack("⚠️ Belum menemukan ESP32 di jaringan, tunggu sebentar / cek WiFi HP");
+      return;
+    }
+    try {
+      final response = await http
+          .post(Uri.http(_wifiIp!, "/set", {"ledBrightness": percent.toString()}), headers: esp32AuthHeaders(activeCooler))
+          .timeout(Duration(seconds: 3));
+      if (response.statusCode == 200) {
+        try {
+          final data = jsonDecode(response.body);
+          if (data is Map<String, dynamic>) {
+            setState(() => _applyDeviceStatus(data));
+          }
+        } catch (_) {}
+      } else {
+        _showSnack("❌ ESP32 menolak perintah kecerahan LED");
+      }
+    } catch (e) {
+      _showSnack("⚠️ Gagal kirim perintah, cek koneksi WiFi");
+    }
+  }
+
+  void sendLedBrightnessBLE(int percent) async {
+    if (!bleConnected || bleDevice == null) {
+      setState(() => status = "🔴 Offline");
+      _showSnack("⚠️ Belum terhubung ke perangkat Bluetooth");
+      return;
+    }
+    final ok = await _writeControlBLE({"ledBrightness": percent});
+    if (ok) {
+      setState(() => ledBrightness = percent);
+    } else {
+      _showSnack("❌ Gagal mengirim perintah ke perangkat");
+    }
+  }
+
+  // Kirim warna custom (dari color wheel) ke firmware sebagai hex "RRGGBB".
+  // Firmware otomatis pindah ledMode ke "custom" begitu warna ini diterima.
+  void sendCustomColor(Color color) {
+    if (activeCooler == null) {
+      _showSnack("⚠️ Pilih atau tambah cooler dulu");
+      return;
+    }
+    final hex = color.value.toRadixString(16).padLeft(8, '0').substring(2).toUpperCase();
+    if (connectionMode == "WiFi") {
+      sendCustomColorLocalWifi(hex);
+    } else {
+      sendCustomColorBLE(hex);
+    }
+    setState(() { customColor = color; ledMode = "custom"; lastLedEffect = "custom"; });
+  }
+
+  void sendCustomColorLocalWifi(String hex) async {
+    if (_wifiIp == null) {
+      _showSnack("⚠️ Belum menemukan ESP32 di jaringan, tunggu sebentar / cek WiFi HP");
+      return;
+    }
+    try {
+      final response = await http
+          .post(Uri.http(_wifiIp!, "/set", {"customColor": hex}), headers: esp32AuthHeaders(activeCooler))
+          .timeout(Duration(seconds: 3));
+      if (response.statusCode == 200) {
+        try {
+          final data = jsonDecode(response.body);
+          if (data is Map<String, dynamic>) {
+            setState(() => _applyDeviceStatus(data));
+          }
+        } catch (_) {}
+      } else {
+        _showSnack("❌ ESP32 menolak warna custom");
+      }
+    } catch (e) {
+      _showSnack("⚠️ Gagal kirim perintah, cek koneksi WiFi");
+    }
+  }
+
+  void sendCustomColorBLE(String hex) async {
+    if (!bleConnected || bleDevice == null) {
+      setState(() => status = "🔴 Offline");
+      _showSnack("⚠️ Belum terhubung ke perangkat Bluetooth");
+      return;
+    }
+    final ok = await _writeControlBLE({"customColor": hex});
+    if (!ok) {
       _showSnack("❌ Gagal mengirim perintah ke perangkat");
     }
   }
@@ -2608,6 +2814,7 @@ class _ControllerPageState extends State<ControllerPage> {
   Widget _nexusRgbCard(bool isDark) {
     const speedControlledModes = {'knight', 'fire', 'chase', 'colorwave'};
     final showSpeedSlider = speedControlledModes.contains(ledMode);
+    final showColorWheel = ledMode == 'custom';
     return _nexusCard(isDark, child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       _nexusSectionTitle(isDark, 'RGB ENGINE', 'Efek LED dari firmware ESP32'),
       const SizedBox(height: 12),
@@ -2624,6 +2831,7 @@ class _ControllerPageState extends State<ControllerPage> {
         _rgbButton(isDark, 'FIRE', 'fire', Icons.local_fire_department_rounded),
         _rgbButton(isDark, 'CHASE', 'chase', Icons.arrow_forward_rounded),
         _rgbButton(isDark, 'WAVE', 'colorwave', Icons.waves_rounded),
+        _rgbButton(isDark, 'CUSTOM', 'custom', Icons.palette_rounded),
       ]),
       if (showSpeedSlider) ...[
         const SizedBox(height: 14),
@@ -2659,8 +2867,77 @@ class _ControllerPageState extends State<ControllerPage> {
           Text('CEPAT', style: TextStyle(color: AppColors.textFaint(isDark), fontSize: 8)),
         ]),
       ],
+      if (showColorWheel) ...[
+        const SizedBox(height: 14),
+        Divider(color: AppColors.textFaint(isDark).withOpacity(.15), height: 1),
+        const SizedBox(height: 12),
+        Row(children: [
+          Icon(Icons.palette_rounded, color: accentColor, size: 16),
+          const SizedBox(width: 8),
+          Text('WARNA CUSTOM', style: TextStyle(color: AppColors.textFaint(isDark), fontSize: 9, fontWeight: FontWeight.w900, letterSpacing: 1.4)),
+          const Spacer(),
+          Container(
+            width: 20, height: 20,
+            decoration: BoxDecoration(color: customColor, shape: BoxShape.circle, border: Border.all(color: AppColors.textFaint(isDark).withOpacity(.3))),
+          ),
+          const SizedBox(width: 8),
+          Text('#${customColor.value.toRadixString(16).padLeft(8, '0').substring(2).toUpperCase()}',
+            style: TextStyle(color: AppColors.text(isDark), fontSize: 11, fontWeight: FontWeight.w800)),
+        ]),
+        const SizedBox(height: 14),
+        Center(child: _ColorWheel(
+          color: customColor,
+          size: 220,
+          onChanged: (c) => setState(() => customColor = c),
+          onChangeEnd: (c) => sendCustomColor(c),
+        )),
+        const SizedBox(height: 14),
+        Row(mainAxisAlignment: MainAxisAlignment.spaceEvenly, children: [
+          _rgbValueChip(isDark, 'R', customColor.red, const Color(0xFFFF4444)),
+          _rgbValueChip(isDark, 'G', customColor.green, const Color(0xFF44FF66)),
+          _rgbValueChip(isDark, 'B', customColor.blue, const Color(0xFF4488FF)),
+        ]),
+      ],
+      const SizedBox(height: 14),
+      Divider(color: AppColors.textFaint(isDark).withOpacity(.15), height: 1),
+      const SizedBox(height: 12),
+      Row(children: [
+        Icon(Icons.brightness_6_rounded, color: accentColor, size: 16),
+        const SizedBox(width: 8),
+        Text('BRIGHTNESS', style: TextStyle(color: AppColors.textFaint(isDark), fontSize: 9, fontWeight: FontWeight.w900, letterSpacing: 1.4)),
+        const Spacer(),
+        Text('$ledBrightness%', style: TextStyle(color: accentColor, fontSize: 13, fontWeight: FontWeight.w900)),
+      ]),
+      SliderTheme(
+        data: SliderTheme.of(context).copyWith(
+          activeTrackColor: accentColor,
+          inactiveTrackColor: accentColor.withOpacity(.15),
+          thumbColor: accentColor,
+          overlayColor: accentColor.withOpacity(.15),
+          trackHeight: 5,
+        ),
+        child: Slider(
+          value: ledBrightness.toDouble(),
+          min: 0,
+          max: 100,
+          divisions: 20,
+          label: '$ledBrightness%',
+          onChanged: (v) => setState(() => ledBrightness = v.round()),
+          onChangeEnd: (v) => sendLedBrightness(v.round()),
+        ),
+      ),
     ]));
   }
+
+  Widget _rgbValueChip(bool isDark, String label, int value, Color tint) => Container(
+    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+    decoration: BoxDecoration(color: tint.withOpacity(.14), borderRadius: BorderRadius.circular(10), border: Border.all(color: tint.withOpacity(.4))),
+    child: Row(mainAxisSize: MainAxisSize.min, children: [
+      Text(label, style: TextStyle(color: tint, fontSize: 10, fontWeight: FontWeight.w900)),
+      const SizedBox(width: 6),
+      Text('$value', style: TextStyle(color: AppColors.text(isDark), fontSize: 12, fontWeight: FontWeight.w800)),
+    ]),
+  );
 
   Widget _rgbButton(bool isDark, String label, String mode, IconData icon) {
     final selected = ledMode == mode;
