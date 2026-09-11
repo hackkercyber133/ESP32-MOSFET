@@ -610,7 +610,7 @@ class _ControllerPageState extends State<ControllerPage> {
   String ledMode = "off"; // "off" | "static" | "running" | "disco" | "bounce"
   int ledSpeed = 50; // kecepatan animasi LED (1-100), dari field "ledSpeed" firmware - cuma berlaku utk mode knight/fire/chase/colorwave
   int ledBrightness = 31; // kecerahan LED (0-100%), dari field "ledBrightness" firmware
-  Color customColor = Colors.white; // warna mode "custom", dari field "customColor" firmware (hex RRGGBB)
+  Color customColor = Colors.white; // warna LED global, dari field "customColor" firmware (hex RRGGBB)
   String lastLedEffect = "running"; // efek terakhir dipilih, dipakai saat tombol ON
   String uptime = "00:00:00";
   String status = "🔴 Offline";
@@ -1552,8 +1552,8 @@ class _ControllerPageState extends State<ControllerPage> {
     }
   }
 
-  // Kirim warna custom (dari color wheel) ke firmware sebagai hex "RRGGBB".
-  // Firmware otomatis pindah ledMode ke "custom" begitu warna ini diterima.
+  // Kirim warna global (dari color wheel) ke firmware sebagai hex "RRGGBB".
+  // Tidak mengubah mode LED: efek yang sedang aktif tetap berjalan dengan warna baru.
   void sendCustomColor(Color color) {
     if (activeCooler == null) {
       _showSnack("⚠️ Pilih atau tambah cooler dulu");
@@ -1565,7 +1565,7 @@ class _ControllerPageState extends State<ControllerPage> {
     } else {
       sendCustomColorBLE(hex);
     }
-    setState(() { customColor = color; ledMode = "custom"; lastLedEffect = "custom"; });
+    setState(() { customColor = color; });
   }
 
   void sendCustomColorLocalWifi(String hex) async {
@@ -2814,7 +2814,8 @@ class _ControllerPageState extends State<ControllerPage> {
   Widget _nexusRgbCard(bool isDark) {
     const speedControlledModes = {'knight', 'fire', 'chase', 'colorwave'};
     final showSpeedSlider = speedControlledModes.contains(ledMode);
-    final showColorWheel = ledMode == 'custom';
+    // Color dan brightness adalah pengaturan GLOBAL untuk semua efek LED.
+    final showColorWheel = true;
     return _nexusCard(isDark, child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       _nexusSectionTitle(isDark, 'RGB ENGINE', 'Efek LED dari firmware ESP32'),
       const SizedBox(height: 12),
@@ -2874,7 +2875,7 @@ class _ControllerPageState extends State<ControllerPage> {
         Row(children: [
           Icon(Icons.palette_rounded, color: accentColor, size: 16),
           const SizedBox(width: 8),
-          Text('WARNA CUSTOM', style: TextStyle(color: AppColors.textFaint(isDark), fontSize: 9, fontWeight: FontWeight.w900, letterSpacing: 1.4)),
+          Text('WARNA GLOBAL', style: TextStyle(color: AppColors.textFaint(isDark), fontSize: 9, fontWeight: FontWeight.w900, letterSpacing: 1.4)),
           const Spacer(),
           Container(
             width: 20, height: 20,
