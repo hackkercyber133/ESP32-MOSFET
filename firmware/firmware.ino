@@ -7,6 +7,7 @@
 #include <NimBLEDevice.h>
 #include <Adafruit_NeoPixel.h>
 #include <ArduinoJson.h>
+#include <time.h>
 
 #include <Wire.h>
 #include <esp_random.h>
@@ -47,6 +48,10 @@ int fanSpeedPercent = 100;
 volatile uint32_t fanTachPulseCount = 0;
 unsigned int fanRpm = 0;
 unsigned long lastFanRpmCalc = 0;
+
+// Kecepatan animasi LED (0-100), cuma dipakai mode knight/fire/chase/
+// colorwave (yang lain pakai timing tetap seperti semula). 50 = kecepatan
+// default/original, <50 lebih lambat, >50 lebih cepat - lihat ledStepDelay().
 int ledSpeedPercent = 50;
 
 void setLedSpeed(int percent) {
@@ -57,6 +62,12 @@ void setLedSpeed(int percent) {
     prefs.putInt("ledSpeed", ledSpeedPercent);
   }
 }
+
+// Skala delay dasar tiap mode sesuai ledSpeedPercent. Di speed=50 (default)
+// hasilnya = baseMs (persis kecepatan original sebelum fitur ini ada).
+// speed=100 -> delay dikali ~0.18 (jauh lebih cepat). speed=1 -> delay
+// dikali ~1.8 (lebih lambat). Dibatasi minimum 4ms biar gak jadi terlalu
+// cepat sampai membebani loop() / bikin strip.show() ketimpa-timpa.
 unsigned long ledStepDelay(unsigned long baseMs) {
   float factor = (110.0f - (float)ledSpeedPercent) / 60.0f;
   unsigned long scaled = (unsigned long)((float)baseMs * factor);
@@ -660,6 +671,9 @@ String buildStatusJson(bool includeSecret) {
   doc["chargerWatt"] = chargerwatt;
   doc["powerGood"] = pgood;
   doc["ch224aReady"] = ch224aReady;
+  // Field ini sebelumnya HILANG (nggak pernah dikirim ke app), jadi status
+  // PD di app selalu nyangkut di default "CH224A OFFLINE" walau device
+  // sebenarnya udah nyala & voltase udah pindah.
   doc["pdStatus"] = pdStatus;
   doc["fanSpeed"] = fanSpeedPercent;
   doc["ledSpeed"] = ledSpeedPercent;
@@ -679,18 +693,33 @@ String buildStatusJson(bool includeSecret) {
   return jsonStr;
 }
 
+// BLE GATT notify TIDAK otomatis dipotong-sambung kalau datanya lebih
+// panjang dari MTU (beda sama operasi "read", yang memang auto-reassembly).
+// JSON status ini sudah lumayan panjang (pdStatus, fanRpm, netMode,
+// wifiConnected, httpAuthPass, dll) - kalau dikirim mentah lewat satu kali
+// notify() dan lebih panjang dari (MTU-3) byte, sisanya kepotong diam-diam
+// dan hasilnya JSON rusak di sisi app (gagal di-parse, SEMUA field jadi
+// gak keupdate - persis gejala "macet di 5V, PD gak kebaca").
+//
+// Solusinya: pecah jadi beberapa notify kecil, masing-masing diawali 2
+// byte header (index chunk, total chunk), app yang nyambung ulang. Ini
+// jauh lebih aman daripada cuma ngirit field, karena JSON pasti bakal
+// nambah panjang lagi ke depannya kalau ada fitur baru.
 #define BLE_CHUNK_SIZE 180
 
 void publishStatusBLE() {
   if (!deviceConnected || pCharacteristic == nullptr) return;
-  
+
+  // httpAuthPass cuma perlu dikirim SEKALI per sesi koneksi (app nyimpen
+  // begitu dapat), bukan tiap 300ms selamanya - itu buang-buang bandwidth
+  // BLE yang udah pas-pasan buat field lain.
   String jsonStr = buildStatusJson(!authPassSentThisSession);
   if (!authPassSentThisSession) authPassSentThisSession = true;
 
   size_t total = jsonStr.length();
   size_t numChunks = (total + BLE_CHUNK_SIZE - 1) / BLE_CHUNK_SIZE;
   if (numChunks == 0) numChunks = 1;
-  if (numChunks > 255) numChunks = 255; 
+  if (numChunks > 255) numChunks = 255; // batas 1 byte di header, JSON segini panjang seharusnya gak kejadian
 
   for (size_t i = 0; i < numChunks; i++) {
     size_t start = i * BLE_CHUNK_SIZE;
@@ -701,8 +730,161 @@ void publishStatusBLE() {
     memcpy(packet + 2, jsonStr.c_str() + start, len);
     pCharacteristic->setValue(packet, len + 2);
     pCharacteristic->notify();
-    if (numChunks > 1) delay(15); 
+    if (numChunks > 1) delay(15); // kasih jeda kecil antar potongan biar gak ketimpa/ke-drop stack BLE-nya
   }
+}
+
+// ================= JADWAL OTOMATIS (tersimpan & JALAN MANDIRI di ESP32) =================
+// Sebelumnya jadwal cuma disimpan & dieksekusi di sisi APLIKASI (timer 30 detik di
+// main.dart) - begitu app ditutup / BLE-WiFi terputus, jadwal berhenti total karena
+// tidak ada yang mengirim perintah voltase lagi. Sekarang jadwal disimpan di NVS
+// (flash) ESP32 dan dicek sendiri tiap menit terlepas dari status koneksi ke app.
+//
+// Sumber waktu:
+//  - Mode WiFi: NTP (perlu internet di jaringan rumah), otomatis re-sync tiap kali
+//    ESP32 konek WiFi - termasuk otomatis setelah restart / mati lampu.
+//  - Mode Bluetooth: TIDAK ada internet sama sekali, jadi ESP32 tidak bisa tahu jam
+//    sekarang sendirian. App WAJIB mengirim jam HP (perintah "setTime") minimal
+//    sekali setelah tiap kali ESP32 nyala/restart - dilakukan otomatis oleh app
+//    begitu BLE konek. Selama ESP32 tetap menyala (tidak restart/mati listrik)
+//    setelah itu, jadwal tetap jalan sendiri walau BLE diputus / app ditutup, karena
+//    jam internal ESP32 terus berjalan lepas dari koneksi.
+#define MAX_SCHEDULES 40
+struct ScheduleRule {
+  String id;
+  float voltage;
+  uint8_t hour;
+  uint8_t minute;
+  uint8_t daysMask;       // bit0=Senin ... bit6=Minggu, cocok dgn DateTime.weekday Dart (1=Senin..7=Minggu)
+  bool enabled;
+  int16_t lastFiredYday;  // hari-dalam-tahun (0-365) terakhir jadwal ini jalan, -1 = belum pernah
+};
+ScheduleRule schedules[MAX_SCHEDULES];
+int scheduleCount = 0;
+
+int dartWeekdayFromTm(int tm_wday) { // tm_wday: 0=Minggu..6=Sabtu -> dart: 1=Senin..7=Minggu
+  return (tm_wday == 0) ? 7 : tm_wday;
+}
+
+void setupNtpTime() {
+  // WIB = UTC+7, tanpa DST. Beberapa server dicoba biar cepat dapat salah satu.
+  configTzTime("WIB-7", "pool.ntp.org", "time.google.com", "id.pool.ntp.org");
+  Serial.println("Sinkronisasi waktu NTP dimulai (WIB, UTC+7)...");
+}
+
+void saveSchedulesToPrefs() {
+  JsonDocument doc;
+  JsonArray arr = doc.to<JsonArray>();
+  for (int i = 0; i < scheduleCount; i++) {
+    JsonObject o = arr.add<JsonObject>();
+    o["id"] = schedules[i].id;
+    o["voltage"] = schedules[i].voltage;
+    o["hour"] = schedules[i].hour;
+    o["minute"] = schedules[i].minute;
+    o["daysMask"] = schedules[i].daysMask;
+    o["enabled"] = schedules[i].enabled;
+    o["lastFiredYday"] = schedules[i].lastFiredYday;
+  }
+  String out;
+  serializeJson(doc, out);
+  prefs.putString("schedules", out);
+}
+
+void loadSchedulesFromPrefs() {
+  String raw = prefs.getString("schedules", "[]");
+  JsonDocument doc;
+  if (deserializeJson(doc, raw)) { scheduleCount = 0; return; }
+  scheduleCount = 0;
+  for (JsonObject o : doc.as<JsonArray>()) {
+    if (scheduleCount >= MAX_SCHEDULES) break;
+    ScheduleRule& r = schedules[scheduleCount];
+    r.id = o["id"] | "";
+    r.voltage = o["voltage"] | 5.0;
+    r.hour = o["hour"] | 0;
+    r.minute = o["minute"] | 0;
+    r.daysMask = o["daysMask"] | 0;
+    r.enabled = o["enabled"] | true;
+    r.lastFiredYday = o["lastFiredYday"] | -1;
+    scheduleCount++;
+  }
+  Serial.print("Jadwal otomatis dimuat dari NVS: ");
+  Serial.print(scheduleCount);
+  Serial.println(" aturan.");
+}
+
+// Dipanggil saat app mengirim perintah {"schedules":[{"id","hour","minute","voltage","days":[1..7],"enabled"}...]}
+// Mengganti seluruh daftar jadwal (full replace, sama seperti cara app menyimpan
+// jadwal di HP) dan langsung menyimpannya ke NVS supaya tetap ada walau ESP32 restart.
+void applySchedulesFromJson(JsonArray arr) {
+  static ScheduleRule oldSchedules[MAX_SCHEDULES];
+  int oldCount = scheduleCount;
+  for (int i = 0; i < oldCount; i++) oldSchedules[i] = schedules[i];
+
+  scheduleCount = 0;
+  for (JsonObject o : arr) {
+    if (scheduleCount >= MAX_SCHEDULES) break;
+    ScheduleRule r;
+    r.id = o["id"] | String(scheduleCount);
+    r.voltage = o["voltage"] | 5.0;
+    r.hour = o["hour"] | 0;
+    r.minute = o["minute"] | 0;
+    r.enabled = o["enabled"] | true;
+    r.daysMask = 0;
+    if (o["days"].is<JsonArray>()) {
+      for (JsonVariant d : o["days"].as<JsonArray>()) {
+        int dv = d.as<int>();
+        if (dv >= 1 && dv <= 7) r.daysMask |= (1 << (dv - 1));
+      }
+    }
+    // Kalau id-nya sama dengan jadwal lama (user cuma edit, bukan bikin baru),
+    // pertahankan lastFiredYday supaya tidak nembak dobel di hari yang sama.
+    r.lastFiredYday = -1;
+    for (int j = 0; j < oldCount; j++) {
+      if (oldSchedules[j].id == r.id) { r.lastFiredYday = oldSchedules[j].lastFiredYday; break; }
+    }
+    schedules[scheduleCount] = r;
+    scheduleCount++;
+  }
+  saveSchedulesToPrefs();
+  Serial.print("Jadwal otomatis diperbarui dari app: ");
+  Serial.print(scheduleCount);
+  Serial.println(" aturan tersimpan ke NVS.");
+}
+
+// Dicek tiap loop(), tapi cuma benar-benar mengevaluasi jadwal sekali per menit
+// (dicocokkan lewat jam:menit real, bukan lewat interval millis() - supaya tidak
+// meleset walau loop() jalan ratusan kali per detik).
+void checkSchedulesAutonomous() {
+  if (scheduleCount == 0) return;
+  time_t now = time(nullptr);
+  if (now < 1700000000) return; // waktu belum pernah disinkronkan (NTP/setTime) - jangan eksekusi apa pun
+  struct tm t;
+  localtime_r(&now, &t);
+
+  static int lastCheckedMinuteKey = -1;
+  int minuteKey = t.tm_hour * 60 + t.tm_min;
+  if (minuteKey == lastCheckedMinuteKey) return;
+  lastCheckedMinuteKey = minuteKey;
+
+  int weekdayDart = dartWeekdayFromTm(t.tm_wday);
+  bool changed = false;
+  for (int i = 0; i < scheduleCount; i++) {
+    ScheduleRule& r = schedules[i];
+    if (!r.enabled) continue;
+    if (!(r.daysMask & (1 << (weekdayDart - 1)))) continue;
+    if (r.hour != t.tm_hour || r.minute != t.tm_min) continue;
+    if (r.lastFiredYday == t.tm_yday) continue; // sudah jalan hari ini
+    r.lastFiredYday = t.tm_yday;
+    changed = true;
+    if (ch224aReady) {
+      applyVoltage(r.voltage);
+      triggerCmdBlink();
+      Serial.print("Jadwal otomatis terpicu MANDIRI (tanpa app terhubung) -> ");
+      Serial.print(r.voltage);
+      Serial.println("V");
+    }
+  }
+  if (changed) saveSchedulesToPrefs();
 }
 
 void processCommandJson(const String& cmd) {
@@ -730,6 +912,21 @@ void processCommandJson(const String& cmd) {
   if (doc["peltier"].is<bool>()) {
     setPeltier(doc["peltier"]);
     triggerCmdBlink();
+  }
+  if (doc["schedules"].is<JsonArray>()) {
+    applySchedulesFromJson(doc["schedules"].as<JsonArray>());
+  }
+  if (!doc["setTime"].isNull()) {
+    // Epoch UTC (detik) dikirim app - dipakai terutama di mode Bluetooth karena
+    // tidak ada NTP sama sekali di sana. TZ WIB-7 yang menggeser ke waktu lokal.
+    long epoch = doc["setTime"].as<long>();
+    if (epoch > 1000000000L) {
+      struct timeval tv; tv.tv_sec = epoch; tv.tv_usec = 0;
+      settimeofday(&tv, NULL);
+      setenv("TZ", "WIB-7", 1);
+      tzset();
+      Serial.println("Waktu disinkronkan dari app (untuk jadwal otomatis).");
+    }
   }
 }
 
@@ -1056,6 +1253,22 @@ void handleSwitchBle() {
   ESP.restart();
 }
 
+// Body raw JSON: {"schedules":[{"id":"..","hour":22,"minute":0,"voltage":5,"days":[1,2,3,4,5,6,7],"enabled":true}, ...]}
+// Dipakai app untuk mendorong daftar jadwal terbaru ke ESP32 (mode WiFi) setiap
+// kali user tambah/edit/hapus jadwal, supaya tersimpan di NVS & dieksekusi mandiri.
+void handleSetSchedulesHttp() {
+  if (!checkHttpAuth()) return;
+  lastAppContact = millis();
+  processCommandJson(server.arg("plain"));
+  server.send(200, "application/json", "{\"result\":\"OK\"}");
+}
+
+void handleGetSchedulesHttp() {
+  if (!checkHttpAuth()) return;
+  lastAppContact = millis();
+  server.send(200, "application/json", prefs.getString("schedules", "[]"));
+}
+
 void registerHttpHandlers() {
   server.on("/", HTTP_GET, handleRoot);
   server.on("/scanwifi", HTTP_GET, handleScanWifi);
@@ -1063,6 +1276,8 @@ void registerHttpHandlers() {
   server.on("/status", HTTP_GET, handleStatusHttp);
   server.on("/set", HTTP_POST, handleSetCmd);
   server.on("/switch_ble", HTTP_POST, handleSwitchBle);
+  server.on("/schedules", HTTP_POST, handleSetSchedulesHttp);
+  server.on("/schedules", HTTP_GET, handleGetSchedulesHttp);
 }
 
 void startConfigAP() {
@@ -1101,6 +1316,7 @@ void startWifiControlMode(const String& ssid, const String& pass) {
     server.begin();
     udp.begin(UDP_BEACON_PORT);
     wifiControlActive = true;
+    setupNtpTime(); // supaya jadwal otomatis punya sumber waktu yang akurat & mandiri, tanpa app
   } else {
     Serial.println("\nGAGAL: Tidak bisa konek WiFi dalam 15 detik, kembali ke mode Bluetooth...");
     prefs.putString("netMode", "ble");
@@ -1235,6 +1451,7 @@ void setup() {
   }
 
   registerHttpHandlers();
+  loadSchedulesFromPrefs(); // muat jadwal otomatis tersimpan - tetap ada walau habis restart/mati listrik
 
   if (netMode == "wifi" && savedSsid.length() > 0) {
     startWifiControlMode(savedSsid, savedPass);
@@ -1273,6 +1490,8 @@ void loop() {
   if (configApActive || wifiControlActive) {
     server.handleClient();
   }
+
+  checkSchedulesAutonomous(); // jalan tiap loop, tapi cuma eksekusi 1x per menit - lepas dari status app
 
   if (wifiControlActive && millis() - lastBeacon > 2000) {
     sendUdpBeacon();
