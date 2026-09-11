@@ -288,7 +288,7 @@ class _DeviceSpecsPageState extends State<DeviceSpecsPage> {
                   borderColor: widget.accentColor,
                   borderWidth: 2.5,
                   entryRadius: 4,
-                  dataEntries: entries.map((v) => RadarEntry(value: v.toDouble())).toList(),
+                  dataEntries: entries.map((v) => RadarEntry(value: v)).toList(),
                 ),
               ],
             ),

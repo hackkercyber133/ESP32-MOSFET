@@ -16,7 +16,7 @@ import 'notification_service.dart';
 import 'backup_service.dart';
 import 'history_page.dart';
 import 'schedule_page.dart';
-import 'device_page.dart';
+import 'device_specs_page.dart';
 
 // ---- Basic Auth untuk endpoint HTTP ESP32 yang mengubah state ----
 // Harus SAMA PERSIS dengan HTTP_AUTH_USER / HTTP_AUTH_PASS di firmware.ino.
@@ -474,14 +474,11 @@ class _ColorWheel extends StatefulWidget {
 }
 
 class _ColorWheelState extends State<_ColorWheel> {
-  bool _isDragging = false;
-
   void _handlePan(Offset localPos) {
     final radius = widget.size / 2;
     final dx = localPos.dx - radius;
     final dy = localPos.dy - radius;
     final dist = sqrt(dx * dx + dy * dy);
-    // Izinkan sentuhan sedikit di luar lingkaran supaya lebih mudah
     final clampedDist = dist > radius ? radius : dist;
     double angle = atan2(dy, dx) * 180 / pi;
     if (angle < 0) angle += 360;
@@ -496,53 +493,39 @@ class _ColorWheelState extends State<_ColorWheel> {
     final radius = widget.size / 2;
     final angleRad = hsv.hue * pi / 180.0;
     final dist = hsv.saturation * radius;
-    // Thumb lebih besar (24px) supaya lebih mudah ditekan
-    const thumbSize = 24.0;
-    final thumbOffset = Offset(
-      radius + dist * cos(angleRad) - thumbSize / 2,
-      radius + dist * sin(angleRad) - thumbSize / 2,
-    );
-    return NotificationListener<ScrollNotification>(
-      // Cegah scroll ListView saat sedang drag di dalam wheel
-      onNotification: (_) => _isDragging,
-      child: GestureDetector(
-        // Paksa gesture ini menang atas parent ListView saat drag dimulai
-        behavior: HitTestBehavior.opaque,
-        onPanStart: (d) {
-          setState(() => _isDragging = true);
-          _handlePan(d.localPosition);
-        },
-        onPanUpdate: (d) => _handlePan(d.localPosition),
-        onPanEnd: (_) {
-          setState(() => _isDragging = false);
-          widget.onChangeEnd(widget.color);
-        },
-        onPanCancel: () => setState(() => _isDragging = false),
-        onTapUp: (d) {
-          _handlePan(d.localPosition);
-          widget.onChangeEnd(widget.color);
-        },
-        child: SizedBox(
-          width: widget.size, height: widget.size,
-          child: Stack(children: [
-            CustomPaint(size: Size(widget.size, widget.size), painter: _ColorWheelPainter()),
-            Positioned(
-              left: thumbOffset.dx, top: thumbOffset.dy,
+    final thumbOffset = Offset(radius + dist * cos(angleRad) - 10, radius + dist * sin(angleRad) - 10);
+    // PENTING: sebelumnya pakai GestureDetector(onPan...) - itu gesture "pan"
+    // semantik yang ikut rebutan di gesture arena Flutter sama drag vertikal
+    // ListView di sekitarnya. Untuk drag ke arah yang condong vertikal,
+    // ListView sering "menang" duluan (recognizer-nya lebih cepat declare diri
+    // menang), jadi yang kegeser malah halaman, bukan titik warnanya.
+    // Listener pakai RAW pointer event yang TIDAK ikut arena sama sekali -
+    // jadi titiknya dijamin selalu ngikutin jari persis, kapan pun disentuh,
+    // nggak peduli ada ListView/scroll di sekitarnya.
+    return Listener(
+      behavior: HitTestBehavior.opaque,
+      onPointerDown: (e) => _handlePan(e.localPosition),
+      onPointerMove: (e) => _handlePan(e.localPosition),
+      onPointerUp: (_) => widget.onChangeEnd(widget.color),
+      child: SizedBox(
+        width: widget.size, height: widget.size,
+        child: Stack(children: [
+          CustomPaint(size: Size(widget.size, widget.size), painter: _ColorWheelPainter()),
+          Positioned(
+            left: thumbOffset.dx, top: thumbOffset.dy,
+            child: IgnorePointer(
               child: Container(
-                width: thumbSize, height: thumbSize,
-                decoration: BoxDecoration(
-                  color: widget.color,
-                  shape: BoxShape.circle,
-                  border: Border.all(color: Colors.white, width: 3),
-                  boxShadow: [
-                    BoxShadow(color: widget.color.withOpacity(0.6), blurRadius: 10, spreadRadius: 1),
-                    const BoxShadow(color: Colors.black54, blurRadius: 4),
-                  ],
-                ),
+              width: 20, height: 20,
+              decoration: BoxDecoration(
+                color: widget.color,
+                shape: BoxShape.circle,
+                border: Border.all(color: Colors.white, width: 2.5),
+                boxShadow: const [BoxShadow(color: Colors.black38, blurRadius: 4)],
               ),
             ),
-          ]),
-        ),
+          ),
+          ),
+        ]),
       ),
     );
   }
@@ -635,8 +618,7 @@ class _ControllerPageState extends State<ControllerPage> {
   String ledMode = "off"; // "off" | "static" | "running" | "disco" | "bounce"
   int ledSpeed = 50; // kecepatan animasi LED (1-100), dari field "ledSpeed" firmware - cuma berlaku utk mode knight/fire/chase/colorwave
   int ledBrightness = 31; // kecerahan LED (0-100%), dari field "ledBrightness" firmware
-  Color customColor = Colors.white; // warna mode "custom", dari field "customColor" firmware (hex RRGGBB)
-  Color modeColor = Colors.white;   // warna untuk mode animasi (knight/fire/chase/colorwave), dari field "modeColor" firmware
+  Color customColor = Colors.white; // warna LED global, dari field "customColor" firmware (hex RRGGBB)
   String lastLedEffect = "running"; // efek terakhir dipilih, dipakai saat tombol ON
   String uptime = "00:00:00";
   String status = "🔴 Offline";
@@ -993,7 +975,6 @@ class _ControllerPageState extends State<ControllerPage> {
     final rawLedSpeed = data['ledSpeed'];
     final rawLedBrightness = data['ledBrightness'];
     final rawCustomColor = data['customColor'];
-    final rawModeColor = data['modeColor'];
 
     if (rawVoltage is num) setVolt = rawVoltage.toDouble();
     if (rawPowerGood is bool) powerGood = rawPowerGood;
@@ -1008,10 +989,6 @@ class _ControllerPageState extends State<ControllerPage> {
     if (rawCustomColor is String && rawCustomColor.length == 6) {
       final parsed = int.tryParse(rawCustomColor, radix: 16);
       if (parsed != null) customColor = Color(0xFF000000 | parsed);
-    }
-    if (rawModeColor is String && rawModeColor.length == 6) {
-      final parsed = int.tryParse(rawModeColor, radix: 16);
-      if (parsed != null) modeColor = Color(0xFF000000 | parsed);
     }
     ledMode = data['ledMode'] ?? ledMode;
     uptime = data['uptime'] ?? uptime;
@@ -1583,8 +1560,8 @@ class _ControllerPageState extends State<ControllerPage> {
     }
   }
 
-  // Kirim warna custom (dari color wheel) ke firmware sebagai hex "RRGGBB".
-  // Firmware otomatis pindah ledMode ke "custom" begitu warna ini diterima.
+  // Kirim warna global (dari color wheel) ke firmware sebagai hex "RRGGBB".
+  // Tidak mengubah mode LED: efek yang sedang aktif tetap berjalan dengan warna baru.
   void sendCustomColor(Color color) {
     if (activeCooler == null) {
       _showSnack("⚠️ Pilih atau tambah cooler dulu");
@@ -1596,39 +1573,7 @@ class _ControllerPageState extends State<ControllerPage> {
     } else {
       sendCustomColorBLE(hex);
     }
-    setState(() { customColor = color; ledMode = "custom"; lastLedEffect = "custom"; });
-  }
-
-  // Kirim warna untuk mode animasi (knight/fire/chase/colorwave) ke firmware
-  void sendModeColor(Color color) {
-    if (activeCooler == null) return;
-    final hex = color.value.toRadixString(16).padLeft(8, '0').substring(2).toUpperCase();
-    if (connectionMode == "WiFi") {
-      _sendModeColorLocalWifi(hex);
-    } else {
-      _sendModeColorBLE(hex);
-    }
-    setState(() => modeColor = color);
-  }
-
-  void _sendModeColorLocalWifi(String hex) async {
-    if (_wifiIp == null) return;
-    try {
-      final response = await http
-          .post(Uri.http(_wifiIp!, "/set", {"modeColor": hex}), headers: esp32AuthHeaders(activeCooler))
-          .timeout(const Duration(seconds: 3));
-      if (response.statusCode == 200) {
-        try {
-          final data = jsonDecode(response.body);
-          if (data is Map<String, dynamic>) setState(() => _applyDeviceStatus(data));
-        } catch (_) {}
-      }
-    } catch (_) {}
-  }
-
-  void _sendModeColorBLE(String hex) async {
-    if (!bleConnected || bleDevice == null) return;
-    await _writeControlBLE({"modeColor": hex});
+    setState(() { customColor = color; });
   }
 
   void sendCustomColorLocalWifi(String hex) async {
@@ -2435,6 +2380,19 @@ class _ControllerPageState extends State<ControllerPage> {
                 _showBackupDialog();
               },
             ),
+            ListTile(
+              leading: Icon(Icons.smartphone_rounded, color: AppColors.textFaint(isDark)),
+              title: Text("Spesifikasi HP", style: TextStyle(color: AppColors.text(isDark))),
+              subtitle: Text("Jaringan, baterai, performa, refresh rate live",
+                  style: TextStyle(color: AppColors.textFaint(isDark), fontSize: 11)),
+              onTap: () {
+                Navigator.pop(context);
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => DeviceSpecsPage(accentColor: accentColor)),
+                );
+              },
+            ),
             Divider(color: AppColors.divider(isDark)),
             _drawerSectionTitle("Tampilan"),
             Padding(
@@ -2531,15 +2489,6 @@ class _ControllerPageState extends State<ControllerPage> {
             ),
             Divider(color: AppColors.divider(isDark)),
             _drawerSectionTitle("Lainnya"),
-            ListTile(
-              leading: Icon(Icons.phone_android_rounded, color: AppColors.textFaint(isDark)),
-              title: Text("Spesifikasi HP", style: TextStyle(color: AppColors.text(isDark))),
-              subtitle: Text("Info layar, sistem, & performa", style: TextStyle(color: AppColors.textFaint(isDark), fontSize: 11)),
-              onTap: () {
-                Navigator.pop(context);
-                Navigator.push(context, MaterialPageRoute(builder: (_) => DeviceInfoPage(accentColor: accentColor, appVersion: kAppVersion)));
-              },
-            ),
             ListTile(
               leading: Icon(Icons.info_outline, color: AppColors.textFaint(isDark)),
               title: Text("Tentang", style: TextStyle(color: AppColors.text(isDark))),
@@ -2770,6 +2719,7 @@ class _ControllerPageState extends State<ControllerPage> {
           final double v = m['v']; final Color c = m['c']; final selected = setVolt == v;
           return _TapScale(
             onTap: () => sendVoltage(v),
+            rippleColor: c,
             child: AnimatedContainer(
               duration: const Duration(milliseconds: 260),
               curve: Curves.easeOutCubic,
@@ -2884,14 +2834,12 @@ class _ControllerPageState extends State<ControllerPage> {
   );
 
   Widget _nexusRgbCard(bool isDark) {
-    const speedControlledModes = {'knight', 'fire', 'chase', 'colorwave'};
-    // Mode yang bisa dikustom warnanya: knight, fire, chase, colorwave, custom
-    const colorableModes = {'knight', 'fire', 'chase', 'colorwave', 'custom'};
+    // Mode yang boleh diatur speed + brightness-nya.
+    const speedControlledModes = {'running', 'disco', 'bounce', 'knight', 'fire', 'chase', 'colorwave'};
+    const colorModes = {'knight', 'fire', 'chase', 'colorwave', 'custom'};
     final showSpeedSlider = speedControlledModes.contains(ledMode);
-    final showColorWheel = colorableModes.contains(ledMode);
-    // Mode animasi pakai modeColor, custom pakai customColor
-    final isCustomMode = ledMode == 'custom';
-    final activeWheelColor = isCustomMode ? customColor : modeColor;
+    final showColorWheel = colorModes.contains(ledMode);
+
     return _nexusCard(isDark, child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       _nexusSectionTitle(isDark, 'RGB ENGINE', 'Efek LED dari firmware ESP32'),
       const SizedBox(height: 12),
@@ -2951,51 +2899,28 @@ class _ControllerPageState extends State<ControllerPage> {
         Row(children: [
           Icon(Icons.palette_rounded, color: accentColor, size: 16),
           const SizedBox(width: 8),
-          Text(
-            isCustomMode ? 'WARNA CUSTOM' : 'WARNA EFEK',
-            style: TextStyle(color: AppColors.textFaint(isDark), fontSize: 9, fontWeight: FontWeight.w900, letterSpacing: 1.4),
-          ),
+          Text('WARNA EFEK', style: TextStyle(color: AppColors.textFaint(isDark), fontSize: 9, fontWeight: FontWeight.w900, letterSpacing: 1.4)),
           const Spacer(),
           Container(
-            width: 22, height: 22,
-            decoration: BoxDecoration(
-              color: activeWheelColor,
-              shape: BoxShape.circle,
-              border: Border.all(color: AppColors.textFaint(isDark).withOpacity(.4), width: 1.5),
-              boxShadow: [BoxShadow(color: activeWheelColor.withOpacity(0.5), blurRadius: 8)],
-            ),
+            width: 20, height: 20,
+            decoration: BoxDecoration(color: customColor, shape: BoxShape.circle, border: Border.all(color: AppColors.textFaint(isDark).withOpacity(.3))),
           ),
           const SizedBox(width: 8),
-          Text(
-            '#${activeWheelColor.value.toRadixString(16).padLeft(8, '0').substring(2).toUpperCase()}',
-            style: TextStyle(color: AppColors.text(isDark), fontSize: 11, fontWeight: FontWeight.w800),
-          ),
+          Text('#${customColor.value.toRadixString(16).padLeft(8, '0').substring(2).toUpperCase()}',
+            style: TextStyle(color: AppColors.text(isDark), fontSize: 11, fontWeight: FontWeight.w800)),
         ]),
         const SizedBox(height: 14),
-        // ScrollPhysics dimatikan di area ini agar tidak konflik dengan drag wheel
         Center(child: _ColorWheel(
-          color: activeWheelColor,
-          size: 240,
-          onChanged: (c) {
-            if (isCustomMode) {
-              setState(() => customColor = c);
-            } else {
-              setState(() => modeColor = c);
-            }
-          },
-          onChangeEnd: (c) {
-            if (isCustomMode) {
-              sendCustomColor(c);
-            } else {
-              sendModeColor(c);
-            }
-          },
+          color: customColor,
+          size: 220,
+          onChanged: (c) => setState(() => customColor = c),
+          onChangeEnd: (c) => sendCustomColor(c),
         )),
         const SizedBox(height: 14),
         Row(mainAxisAlignment: MainAxisAlignment.spaceEvenly, children: [
-          _rgbValueChip(isDark, 'R', activeWheelColor.red, const Color(0xFFFF4444)),
-          _rgbValueChip(isDark, 'G', activeWheelColor.green, const Color(0xFF44FF66)),
-          _rgbValueChip(isDark, 'B', activeWheelColor.blue, const Color(0xFF4488FF)),
+          _rgbValueChip(isDark, 'R', customColor.red, const Color(0xFFFF4444)),
+          _rgbValueChip(isDark, 'G', customColor.green, const Color(0xFF44FF66)),
+          _rgbValueChip(isDark, 'B', customColor.blue, const Color(0xFF4488FF)),
         ]),
       ],
       const SizedBox(height: 14),
@@ -3042,6 +2967,7 @@ class _ControllerPageState extends State<ControllerPage> {
   Widget _rgbButton(bool isDark, String label, String mode, IconData icon) {
     final selected = ledMode == mode;
     return Expanded(child: _TapScale(
+      rippleColor: accentColor,
       onTap: () {
         // Ubah tampilan mode LED langsung begitu ditap (termasuk buka panel
         // color wheel untuk CUSTOM), tidak nunggu konfirmasi balik dari
@@ -3070,13 +2996,11 @@ class _ControllerPageState extends State<ControllerPage> {
       Navigator.push(context, MaterialPageRoute(builder: (_) => SchedulePage(coolerId: activeCooler!.id, accentColor: accentColor, availableVoltages: const [5,9,12,15])));
     }),
     _quickTile(isDark, Icons.palette_outlined, 'THEME', () => _showThemeSheet()),
-    _quickTile(isDark, Icons.phone_android_rounded, 'DEVICE', () {
-      Navigator.push(context, MaterialPageRoute(builder: (_) => DeviceInfoPage(accentColor: accentColor, appVersion: kAppVersion)));
-    }),
   ]);
 
   Widget _quickTile(bool isDark, IconData icon, String label, VoidCallback onTap) => Expanded(child: _TapScale(
     onTap: onTap,
+    rippleColor: accentColor,
     child: _nexusCard(isDark, child: Column(children: [Icon(icon, color: accentColor, size: 22), const SizedBox(height: 7), Text(label, style: TextStyle(color: AppColors.text(isDark), fontSize: 8, fontWeight: FontWeight.w900, letterSpacing: 1))])),
   ));
 
@@ -3216,16 +3140,38 @@ class _ShimmerTitleState extends State<_ShimmerTitle> with SingleTickerProviderS
 class _TapScale extends StatefulWidget {
   final Widget child;
   final VoidCallback? onTap;
-  const _TapScale({required this.child, this.onTap});
+  final Color? rippleColor; // warna glow cairnya - biasanya diisi accentColor si pemanggil
+  const _TapScale({required this.child, this.onTap, this.rippleColor});
 
   @override
   State<_TapScale> createState() => _TapScaleState();
 }
 
 class _TapScaleState extends State<_TapScale> with SingleTickerProviderStateMixin {
-  late final AnimationController _ctrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 160));
-  late final Animation<double> _scale = Tween<double>(begin: 1.0, end: 0.94)
-      .animate(CurvedAnimation(parent: _ctrl, curve: Curves.easeOutCubic));
+  // Durasi lebih panjang dari sekadar "tekan-lepas" biasa - biar ada ruang
+  // buat efek mantul elastis + glow cair mereda pelan-pelan setelahnya.
+  late final AnimationController _ctrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 620));
+
+  // Squash-and-settle: turun cepat pas ditekan (elemen "menekuk" seperti
+  // cairan kena tekanan), lalu MEMANTUL lewat titik keseimbangannya
+  // (elasticOut/easeOutBack) sebelum akhirnya diam - inilah yang bikin
+  // terasa "liquid" dibanding cuma scale turun-naik linear biasa.
+  late final Animation<double> _squash = TweenSequence<double>([
+    TweenSequenceItem(tween: Tween(begin: 1.0, end: 0.91).chain(CurveTween(curve: Curves.easeOutCubic)), weight: 16),
+    TweenSequenceItem(tween: Tween(begin: 0.91, end: 1.045).chain(CurveTween(curve: Curves.easeOutBack)), weight: 46),
+    TweenSequenceItem(tween: Tween(begin: 1.045, end: 1.0).chain(CurveTween(curve: Curves.easeOutCubic)), weight: 38),
+  ]).animate(_ctrl);
+
+  // Glow bundar yang "meleleh"/membesar pelan dari titik jari nyentuh,
+  // makin transparan makin lebar - kesan gelombang cairan menyebar.
+  late final Animation<double> _rippleScale = Tween<double>(begin: 0.0, end: 3.0)
+      .animate(CurvedAnimation(parent: _ctrl, curve: const Interval(0.0, 0.78, curve: Curves.easeOutCubic)));
+  late final Animation<double> _rippleOpacity = TweenSequence<double>([
+    TweenSequenceItem(tween: Tween(begin: 0.0, end: 0.55), weight: 6),
+    TweenSequenceItem(tween: Tween(begin: 0.55, end: 0.0), weight: 94),
+  ]).animate(CurvedAnimation(parent: _ctrl, curve: const Interval(0.0, 0.82, curve: Curves.easeOut)));
+
+  Offset? _tapPos;
 
   @override
   void dispose() {
@@ -3235,15 +3181,43 @@ class _TapScaleState extends State<_TapScale> with SingleTickerProviderStateMixi
 
   @override
   Widget build(BuildContext context) {
+    final glow = widget.rippleColor ?? Colors.white;
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
+      onTapDown: (d) {
+        _tapPos = d.localPosition;
+        _ctrl.forward(from: 0);
+      },
       onTap: widget.onTap,
-      onTapDown: (_) => _ctrl.forward(),
-      onTapUp: (_) => _ctrl.reverse(),
-      onTapCancel: () => _ctrl.reverse(),
       child: AnimatedBuilder(
-        animation: _scale,
-        builder: (_, child) => Transform.scale(scale: _scale.value, child: child),
+        animation: _ctrl,
+        builder: (context, child) => Transform.scale(
+          scale: _squash.value,
+          child: Stack(clipBehavior: Clip.none, children: [
+            if (child != null) child,
+            if (_tapPos != null && _ctrl.value < 0.82)
+              Positioned(
+                left: _tapPos!.dx - 55,
+                top: _tapPos!.dy - 55,
+                child: IgnorePointer(
+                  child: Opacity(
+                    opacity: _rippleOpacity.value,
+                    child: Transform.scale(
+                      scale: _rippleScale.value,
+                      child: Container(
+                        width: 110,
+                        height: 110,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          gradient: RadialGradient(colors: [glow.withOpacity(.9), glow.withOpacity(0)]),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+          ]),
+        ),
         child: widget.child,
       ),
     );
