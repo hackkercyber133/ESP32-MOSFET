@@ -2850,7 +2850,7 @@ class _ControllerPageState extends State<ControllerPage> {
         _rgbButton(isDark, 'DISCO', 'disco', Icons.celebration_rounded),
         _rgbButton(isDark, 'BOUNCE', 'bounce', Icons.swap_horiz_rounded),
       ]),
-      const SizedBox(height: 8),
+      const SizedBox(height: 6),
       Row(children: [
         _rgbButton(isDark, 'KNIGHT', 'knight', Icons.remove_red_eye_rounded),
         _rgbButton(isDark, 'FIRE', 'fire', Icons.local_fire_department_rounded),
@@ -2979,9 +2979,13 @@ class _ControllerPageState extends State<ControllerPage> {
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 220),
         curve: Curves.easeOutCubic,
-        margin: const EdgeInsets.symmetric(horizontal: 2), padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 2),
+        margin: const EdgeInsets.symmetric(horizontal: 1.5), padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 2),
         decoration: BoxDecoration(color: selected ? accentColor.withOpacity(.16) : AppColors.card(isDark), borderRadius: BorderRadius.circular(12), border: Border.all(color: selected ? accentColor : Colors.transparent)),
-        child: Column(children: [Icon(icon, color: selected ? accentColor : AppColors.textFaint(isDark), size: 16), const SizedBox(height: 4), Text(label, style: TextStyle(color: selected ? accentColor : AppColors.textFaint(isDark), fontSize: 7, fontWeight: FontWeight.w900))]),
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Icon(icon, color: selected ? accentColor : AppColors.textFaint(isDark), size: 21),
+          const SizedBox(height: 5),
+          Text(label, style: TextStyle(color: selected ? accentColor : AppColors.textFaint(isDark), fontSize: 8.5, fontWeight: FontWeight.w900, letterSpacing: .2)),
+        ]),
       ),
     ));
   }
@@ -2991,10 +2995,12 @@ class _ControllerPageState extends State<ControllerPage> {
       if (activeCooler == null) return _showSnack('Pilih device dulu');
       Navigator.push(context, MaterialPageRoute(builder: (_) => HistoryPage(coolerId: activeCooler!.id, coolerName: activeCooler!.nickname, accentColor: accentColor)));
     }),
+    const SizedBox(width: 10),
     _quickTile(isDark, Icons.schedule_rounded, 'SCHEDULE', () {
       if (activeCooler == null) return _showSnack('Pilih device dulu');
       Navigator.push(context, MaterialPageRoute(builder: (_) => SchedulePage(coolerId: activeCooler!.id, accentColor: accentColor, availableVoltages: const [5,9,12,15])));
     }),
+    const SizedBox(width: 10),
     _quickTile(isDark, Icons.palette_outlined, 'THEME', () => _showThemeSheet()),
   ]);
 
