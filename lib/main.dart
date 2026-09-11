@@ -494,6 +494,7 @@ class _ColorWheelState extends State<_ColorWheel> {
     final dist = hsv.saturation * radius;
     final thumbOffset = Offset(radius + dist * cos(angleRad) - 10, radius + dist * sin(angleRad) - 10);
     return GestureDetector(
+      behavior: HitTestBehavior.opaque,
       onPanStart: (d) => _handlePan(d.localPosition),
       onPanUpdate: (d) => _handlePan(d.localPosition),
       onPanEnd: (_) => widget.onChangeEnd(widget.color),
@@ -507,7 +508,8 @@ class _ColorWheelState extends State<_ColorWheel> {
           CustomPaint(size: Size(widget.size, widget.size), painter: _ColorWheelPainter()),
           Positioned(
             left: thumbOffset.dx, top: thumbOffset.dy,
-            child: Container(
+            child: IgnorePointer(
+              child: Container(
               width: 20, height: 20,
               decoration: BoxDecoration(
                 color: widget.color,
@@ -516,6 +518,7 @@ class _ColorWheelState extends State<_ColorWheel> {
                 boxShadow: const [BoxShadow(color: Colors.black38, blurRadius: 4)],
               ),
             ),
+          ),
           ),
         ]),
       ),
@@ -2812,10 +2815,15 @@ class _ControllerPageState extends State<ControllerPage> {
   );
 
   Widget _nexusRgbCard(bool isDark) {
-    const speedControlledModes = {'knight', 'fire', 'chase', 'colorwave'};
+    // Mode bawaan: warna/efek tetap default firmware.
+    // Hanya speed + brightness yang tersedia untuk mode-mode ini.
+    const defaultModes = {'static', 'running', 'disco', 'bounce'};
+    const speedControlledModes = {'running', 'disco', 'bounce', 'knight', 'fire', 'chase', 'colorwave'};
+    const colorModes = {'knight', 'fire', 'chase', 'colorwave', 'custom'};
     final showSpeedSlider = speedControlledModes.contains(ledMode);
-    // Color dan brightness adalah pengaturan GLOBAL untuk semua efek LED.
-    final showColorWheel = true;
+    final showColorWheel = colorModes.contains(ledMode);
+    final isDefaultMode = defaultModes.contains(ledMode);
+
     return _nexusCard(isDark, child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       _nexusSectionTitle(isDark, 'RGB ENGINE', 'Efek LED dari firmware ESP32'),
       const SizedBox(height: 12),
@@ -2875,7 +2883,7 @@ class _ControllerPageState extends State<ControllerPage> {
         Row(children: [
           Icon(Icons.palette_rounded, color: accentColor, size: 16),
           const SizedBox(width: 8),
-          Text('WARNA GLOBAL', style: TextStyle(color: AppColors.textFaint(isDark), fontSize: 9, fontWeight: FontWeight.w900, letterSpacing: 1.4)),
+          Text('WARNA EFEK', style: TextStyle(color: AppColors.textFaint(isDark), fontSize: 9, fontWeight: FontWeight.w900, letterSpacing: 1.4)),
           const Spacer(),
           Container(
             width: 20, height: 20,
@@ -2898,6 +2906,13 @@ class _ControllerPageState extends State<ControllerPage> {
           _rgbValueChip(isDark, 'G', customColor.green, const Color(0xFF44FF66)),
           _rgbValueChip(isDark, 'B', customColor.blue, const Color(0xFF4488FF)),
         ]),
+      ],
+      if (isDefaultMode) ...[
+        const SizedBox(height: 4),
+        Padding(
+          padding: const EdgeInsets.only(top: 4),
+          child: Text('MODE DEFAULT • warna bawaan efek', style: TextStyle(color: AppColors.textFaint(isDark), fontSize: 8, letterSpacing: .7)),
+        ),
       ],
       const SizedBox(height: 14),
       Divider(color: AppColors.textFaint(isDark).withOpacity(.15), height: 1),
