@@ -4,6 +4,7 @@
 // Info hardware diambil dari Platform, dart:io, dan FlutterBluePlus (BT state).
 
 import 'dart:async';
+import 'dart:math' as math;
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
@@ -356,8 +357,6 @@ class _DeviceInfoPageState extends State<DeviceInfoPage>
     );
   }
 }
-
-import 'dart:math' as math;
 
 // ── Radar Painter ─────────────────────────────────────────────────────────────
 class _RadarPainter extends CustomPainter {
