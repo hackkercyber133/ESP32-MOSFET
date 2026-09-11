@@ -467,7 +467,20 @@ class _ColorWheel extends StatefulWidget {
   final double size;
   final ValueChanged<Color> onChanged;
   final ValueChanged<Color> onChangeEnd;
-  const _ColorWheel({required this.color, required this.size, required this.onChanged, required this.onChangeEnd});
+  // Dipanggil pas jari MULAI nyentuh roda warna - dipakai parent buat
+  // ngunci scroll ListView di sekitarnya (physics: NeverScrollable) supaya
+  // geser di dalam roda gak ke-"curi" jadi scroll halaman.
+  final VoidCallback? onDragStart;
+  // Dipanggil pas jari LEPAS (atau batal) - parent buka kunci scroll lagi.
+  final VoidCallback? onDragEnd;
+  const _ColorWheel({
+    required this.color,
+    required this.size,
+    required this.onChanged,
+    required this.onChangeEnd,
+    this.onDragStart,
+    this.onDragEnd,
+  });
 
   @override
   State<_ColorWheel> createState() => _ColorWheelState();
@@ -504,9 +517,19 @@ class _ColorWheelState extends State<_ColorWheel> {
     // nggak peduli ada ListView/scroll di sekitarnya.
     return Listener(
       behavior: HitTestBehavior.opaque,
-      onPointerDown: (e) => _handlePan(e.localPosition),
+      onPointerDown: (e) {
+        // Kunci scroll ListView SEBELUM mulai gerakin titik warna, jadi
+        // begitu jari nempel di roda, halaman langsung "diem" - gak ada
+        // jendela waktu buat ListView ikut declare menang duluan.
+        widget.onDragStart?.call();
+        _handlePan(e.localPosition);
+      },
       onPointerMove: (e) => _handlePan(e.localPosition),
-      onPointerUp: (_) => widget.onChangeEnd(widget.color),
+      onPointerUp: (_) {
+        widget.onChangeEnd(widget.color);
+        widget.onDragEnd?.call();
+      },
+      onPointerCancel: (_) => widget.onDragEnd?.call(),
       child: SizedBox(
         width: widget.size, height: widget.size,
         child: Stack(children: [
@@ -620,6 +643,10 @@ class _ControllerPageState extends State<ControllerPage> {
   int ledBrightness = 31; // kecerahan LED (0-100%), dari field "ledBrightness" firmware
   Color customColor = Colors.white; // warna LED global, dari field "customColor" firmware (hex RRGGBB)
   String lastLedEffect = "running"; // efek terakhir dipilih, dipakai saat tombol ON
+  // Kunci scroll halaman selagi jari nyentuh/geser di dalam color wheel -
+  // dipakai physics ListView utama (lihat body Scaffold) supaya nyentuh
+  // bulatan warna gak ikut nge-scroll konten di belakangnya.
+  bool _colorWheelDragging = false;
   String uptime = "00:00:00";
   String status = "🔴 Offline";
   bool ch224aReady = false;
@@ -2575,7 +2602,14 @@ class _ControllerPageState extends State<ControllerPage> {
           color: accentColor,
           onRefresh: () async { if (activeCooler != null) _connectActiveCooler(); await Future.delayed(const Duration(milliseconds: 500)); },
           child: ListView(
-            physics: const AlwaysScrollableScrollPhysics(),
+            // Kalau lagi drag di color wheel, kunci total scroll-nya (bukan
+            // cuma pelan-pelanin) - jari yang geser di dalam bulatan warna
+            // gak boleh ikut nggeser halaman ke atas/bawah sama sekali.
+            // Begitu jari lepas dari bulatan, langsung balik bisa discroll
+            // normal dari mana saja (termasuk area lain kartu RGB).
+            physics: _colorWheelDragging
+                ? const NeverScrollableScrollPhysics()
+                : const AlwaysScrollableScrollPhysics(),
             padding: const EdgeInsets.fromLTRB(16, 12, 16, 28),
             children: [
               _nexusTicker(isDark),
@@ -2915,6 +2949,8 @@ class _ControllerPageState extends State<ControllerPage> {
           size: 220,
           onChanged: (c) => setState(() => customColor = c),
           onChangeEnd: (c) => sendCustomColor(c),
+          onDragStart: () => setState(() => _colorWheelDragging = true),
+          onDragEnd: () => setState(() => _colorWheelDragging = false),
         )),
         const SizedBox(height: 14),
         Row(mainAxisAlignment: MainAxisAlignment.spaceEvenly, children: [
