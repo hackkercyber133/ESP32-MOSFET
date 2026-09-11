@@ -2751,9 +2751,9 @@ class _ControllerPageState extends State<ControllerPage> {
         crossAxisSpacing: 10, mainAxisSpacing: 10, childAspectRatio: 1.45,
         children: modes.map((m) {
           final double v = m['v']; final Color c = m['c']; final selected = setVolt == v;
-          return _TapScale(
+          return GestureDetector(
+            behavior: HitTestBehavior.opaque,
             onTap: () => sendVoltage(v),
-            rippleColor: c,
             child: AnimatedContainer(
               duration: const Duration(milliseconds: 260),
               curve: Curves.easeOutCubic,
@@ -3002,8 +3002,8 @@ class _ControllerPageState extends State<ControllerPage> {
 
   Widget _rgbButton(bool isDark, String label, String mode, IconData icon) {
     final selected = ledMode == mode;
-    return Expanded(child: _TapScale(
-      rippleColor: accentColor,
+    return Expanded(child: GestureDetector(
+      behavior: HitTestBehavior.opaque,
       onTap: () {
         // Ubah tampilan mode LED langsung begitu ditap (termasuk buka panel
         // color wheel untuk CUSTOM), tidak nunggu konfirmasi balik dari
@@ -3015,6 +3015,12 @@ class _ControllerPageState extends State<ControllerPage> {
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 220),
         curve: Curves.easeOutCubic,
+        // width: double.infinity + alignment: center -> pill-nya WAJIB
+        // ngisi penuh lebar kolom Expanded-nya (sebelumnya cuma nyusut
+        // sebesar ikon+teks terus nempel ke kiri-atas, jadi kelihatan ada
+        // jarak lebar kosong sebelum tombol berikutnya).
+        width: double.infinity,
+        alignment: Alignment.center,
         margin: const EdgeInsets.symmetric(horizontal: 1.5), padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 2),
         decoration: BoxDecoration(color: selected ? accentColor.withOpacity(.16) : AppColors.card(isDark), borderRadius: BorderRadius.circular(12), border: Border.all(color: selected ? accentColor : Colors.transparent)),
         child: Column(mainAxisSize: MainAxisSize.min, children: [
@@ -3040,9 +3046,9 @@ class _ControllerPageState extends State<ControllerPage> {
     _quickTile(isDark, Icons.palette_outlined, 'THEME', () => _showThemeSheet()),
   ]);
 
-  Widget _quickTile(bool isDark, IconData icon, String label, VoidCallback onTap) => Expanded(child: _TapScale(
+  Widget _quickTile(bool isDark, IconData icon, String label, VoidCallback onTap) => Expanded(child: GestureDetector(
+    behavior: HitTestBehavior.opaque,
     onTap: onTap,
-    rippleColor: accentColor,
     child: _nexusCard(isDark, child: Column(children: [Icon(icon, color: accentColor, size: 22), const SizedBox(height: 7), Text(label, style: TextStyle(color: AppColors.text(isDark), fontSize: 8, fontWeight: FontWeight.w900, letterSpacing: 1))])),
   ));
 
@@ -3172,95 +3178,6 @@ class _ShimmerTitleState extends State<_ShimmerTitle> with SingleTickerProviderS
       child: Text(
         widget.text,
         style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w900, letterSpacing: 1.2),
-      ),
-    );
-  }
-}
-
-// ===== TAP SCALE: efek "ditekan" yang halus (scale down lalu spring back) =====
-// ===== dipakai di tombol-tombol utama supaya interaksi terasa lebih smooth. =====
-class _TapScale extends StatefulWidget {
-  final Widget child;
-  final VoidCallback? onTap;
-  final Color? rippleColor; // warna glow cairnya - biasanya diisi accentColor si pemanggil
-  const _TapScale({required this.child, this.onTap, this.rippleColor});
-
-  @override
-  State<_TapScale> createState() => _TapScaleState();
-}
-
-class _TapScaleState extends State<_TapScale> with SingleTickerProviderStateMixin {
-  // Durasi lebih panjang dari sekadar "tekan-lepas" biasa - biar ada ruang
-  // buat efek mantul elastis + glow cair mereda pelan-pelan setelahnya.
-  late final AnimationController _ctrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 620));
-
-  // Squash-and-settle: turun cepat pas ditekan (elemen "menekuk" seperti
-  // cairan kena tekanan), lalu MEMANTUL lewat titik keseimbangannya
-  // (elasticOut/easeOutBack) sebelum akhirnya diam - inilah yang bikin
-  // terasa "liquid" dibanding cuma scale turun-naik linear biasa.
-  late final Animation<double> _squash = TweenSequence<double>([
-    TweenSequenceItem(tween: Tween(begin: 1.0, end: 0.91).chain(CurveTween(curve: Curves.easeOutCubic)), weight: 16),
-    TweenSequenceItem(tween: Tween(begin: 0.91, end: 1.045).chain(CurveTween(curve: Curves.easeOutBack)), weight: 46),
-    TweenSequenceItem(tween: Tween(begin: 1.045, end: 1.0).chain(CurveTween(curve: Curves.easeOutCubic)), weight: 38),
-  ]).animate(_ctrl);
-
-  // Glow bundar yang "meleleh"/membesar pelan dari titik jari nyentuh,
-  // makin transparan makin lebar - kesan gelombang cairan menyebar.
-  late final Animation<double> _rippleScale = Tween<double>(begin: 0.0, end: 3.0)
-      .animate(CurvedAnimation(parent: _ctrl, curve: const Interval(0.0, 0.78, curve: Curves.easeOutCubic)));
-  late final Animation<double> _rippleOpacity = TweenSequence<double>([
-    TweenSequenceItem(tween: Tween(begin: 0.0, end: 0.55), weight: 6),
-    TweenSequenceItem(tween: Tween(begin: 0.55, end: 0.0), weight: 94),
-  ]).animate(CurvedAnimation(parent: _ctrl, curve: const Interval(0.0, 0.82, curve: Curves.easeOut)));
-
-  Offset? _tapPos;
-
-  @override
-  void dispose() {
-    _ctrl.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final glow = widget.rippleColor ?? Colors.white;
-    return GestureDetector(
-      behavior: HitTestBehavior.opaque,
-      onTapDown: (d) {
-        _tapPos = d.localPosition;
-        _ctrl.forward(from: 0);
-      },
-      onTap: widget.onTap,
-      child: AnimatedBuilder(
-        animation: _ctrl,
-        builder: (context, child) => Transform.scale(
-          scale: _squash.value,
-          child: Stack(clipBehavior: Clip.none, children: [
-            if (child != null) child,
-            if (_tapPos != null && _ctrl.value < 0.82)
-              Positioned(
-                left: _tapPos!.dx - 55,
-                top: _tapPos!.dy - 55,
-                child: IgnorePointer(
-                  child: Opacity(
-                    opacity: _rippleOpacity.value,
-                    child: Transform.scale(
-                      scale: _rippleScale.value,
-                      child: Container(
-                        width: 110,
-                        height: 110,
-                        decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          gradient: RadialGradient(colors: [glow.withOpacity(.9), glow.withOpacity(0)]),
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-          ]),
-        ),
-        child: widget.child,
       ),
     );
   }
