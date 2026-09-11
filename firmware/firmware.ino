@@ -82,18 +82,32 @@ void setLedBrightness(int percent) {
 
 uint8_t customR = 255, customG = 255, customB = 255;
 
+// Warna untuk mode animasi (knight, fire, chase, colorwave, bounce, running, disco, static)
+// Default putih -> behavior lama tetap sama kalau tidak di-set dari app
+uint8_t modeR = 255, modeG = 255, modeB = 255;
+
 void applyLedMode(String mode);
 
 void setCustomColor(uint8_t r, uint8_t g, uint8_t b) {
-  // Warna ini bersifat GLOBAL: tidak lagi memaksa LED pindah ke mode custom.
-  // Efek yang sedang aktif akan langsung memakai warna baru pada frame berikutnya.
   customR = r; customG = g; customB = b;
   uint32_t packed = ((uint32_t)r << 16) | ((uint32_t)g << 8) | b;
   if (prefs.getUInt("customColor", 0xFFFFFFu) != packed) {
     prefs.putUInt("customColor", packed);
   }
-  if (ledMode != "off") {
-    applyLedMode(ledMode);
+  if (ledMode != "custom") {
+    applyLedMode("custom");
+  } else {
+    for (int i = 0; i < NUM_LEDS; i++) strip.setPixelColor(i, strip.Color(customR, customG, customB));
+    strip.show();
+  }
+}
+
+// Warna mode animasi — disimpan ke NVS supaya tetap setelah restart
+void setModeColor(uint8_t r, uint8_t g, uint8_t b) {
+  modeR = r; modeG = g; modeB = b;
+  uint32_t packed = ((uint32_t)r << 16) | ((uint32_t)g << 8) | b;
+  if (prefs.getUInt("modeColor", 0xFFFFFFu) != packed) {
+    prefs.putUInt("modeColor", packed);
   }
 }
 
@@ -377,15 +391,6 @@ void scanI2CBus() {
 #define NUM_LEDS 30
 Adafruit_NeoPixel strip(NUM_LEDS, PIN_LED_DATA, NEO_GRB + NEO_KHZ800);
 String ledMode = "off";
-
-// Terapkan warna global dengan faktor intensitas 0..255.
-uint32_t ledColorScaled(uint8_t intensity = 255) {
-  return strip.Color(
-    ((uint16_t)customR * intensity) / 255,
-    ((uint16_t)customG * intensity) / 255,
-    ((uint16_t)customB * intensity) / 255
-  );
-}
 String lastLedEffect = "running";
 unsigned long lastLedStep = 0;
 uint16_t rainbowStep = 0;
@@ -573,9 +578,9 @@ void applyLedMode(String mode) {
     strip.clear();
     strip.show();
   } else if (mode == "static") {
-    // STATIC juga mengikuti warna global.
     for (int i = 0; i < NUM_LEDS; i++) {
-      strip.setPixelColor(i, ledColorScaled());
+      int hue = (i * 256 / NUM_LEDS) & 255;
+      strip.setPixelColor(i, wheelColor(hue));
     }
     strip.show();
   } else if (mode == "custom") {
@@ -601,10 +606,9 @@ void handleLedAnimation() {
   if (ledMode == "running") {
     if (millis() - lastLedStep < 20) return;
     lastLedStep = millis();
-    // RUN tetap bergerak, tetapi memakai warna global sebagai warna utama.
     for (int i = 0; i < NUM_LEDS; i++) {
-      int wave = (int)(128 + 127 * sinf((i + rainbowStep) * 0.35f));
-      strip.setPixelColor(i, ledColorScaled((uint8_t)wave));
+      int hue = ((i * 256 / NUM_LEDS) + rainbowStep) & 255;
+      strip.setPixelColor(i, wheelColor(hue));
     }
     strip.show();
     rainbowStep += 3;
@@ -613,9 +617,7 @@ void handleLedAnimation() {
     if (millis() - lastLedStep < 120) return;
     lastLedStep = millis();
     for (int i = 0; i < NUM_LEDS; i++) {
-      // DISCO tetap acak, tetapi variasinya berasal dari warna global.
-      uint8_t intensity = random(70, 256);
-      strip.setPixelColor(i, ledColorScaled(intensity));
+      strip.setPixelColor(i, strip.Color(random(0, 256), random(0, 256), random(0, 256)));
     }
     strip.show();
   } else if (ledMode == "bounce") {
@@ -627,7 +629,11 @@ void handleLedAnimation() {
       int pos = bouncePos - (bounceDir * t);
       if (pos >= 0 && pos < NUM_LEDS) {
         int fade = 255 - (t * (255 / tailLen));
-        strip.setPixelColor(pos, ledColorScaled((uint8_t)fade));
+        uint32_t c = wheelColor((bouncePos * 8) & 255);
+        uint8_t r = (uint8_t)(((c >> 16) & 0xFF) * fade / 255);
+        uint8_t g = (uint8_t)(((c >> 8) & 0xFF) * fade / 255);
+        uint8_t b = (uint8_t)((c & 0xFF) * fade / 255);
+        strip.setPixelColor(pos, strip.Color(r, g, b));
       }
     }
     strip.show();
@@ -643,7 +649,17 @@ void handleLedAnimation() {
       int pos = bouncePos - (bounceDir * t);
       if (pos >= 0 && pos < NUM_LEDS) {
         int fade = 255 - (t * (255 / tailLen));
-        strip.setPixelColor(pos, ledColorScaled((uint8_t)fade));
+        // Default knight = merah; kalau modeColor di-set, pakai itu
+        bool isDefault = (modeR == 255 && modeG == 255 && modeB == 255);
+        if (isDefault) {
+          strip.setPixelColor(pos, strip.Color(fade, 0, 0));
+        } else {
+          strip.setPixelColor(pos, strip.Color(
+            (uint8_t)(modeR * fade / 255),
+            (uint8_t)(modeG * fade / 255),
+            (uint8_t)(modeB * fade / 255)
+          ));
+        }
       }
     }
     strip.show();
@@ -653,10 +669,22 @@ void handleLedAnimation() {
 
     if (millis() - lastLedStep < ledStepDelay(60)) return;
     lastLedStep = millis();
+    bool isDefault = (modeR == 255 && modeG == 255 && modeB == 255);
     for (int i = 0; i < NUM_LEDS; i++) {
       int flicker = random(140, 256);
-      uint8_t intensity = (uint8_t)(flicker * random(55, 101) / 100);
-      strip.setPixelColor(i, ledColorScaled(intensity));
+      if (isDefault) {
+        // Api oranye/merah default
+        uint8_t r = flicker;
+        uint8_t g = flicker * random(25, 90) / 100;
+        strip.setPixelColor(i, strip.Color(r, g, 0));
+      } else {
+        // Api dengan warna kustom: flicker pada saluran warna yang dipilih
+        float intensity = (float)flicker / 255.0f;
+        uint8_t r = (uint8_t)(modeR * intensity);
+        uint8_t g = (uint8_t)(modeG * intensity * random(25, 90) / 100);
+        uint8_t b = (uint8_t)(modeB * intensity * random(10, 60) / 100);
+        strip.setPixelColor(i, strip.Color(r, g, b));
+      }
     }
     strip.show();
   } else if (ledMode == "chase") {
@@ -664,7 +692,12 @@ void handleLedAnimation() {
     if (millis() - lastLedStep < ledStepDelay(40)) return;
     lastLedStep = millis();
     strip.clear();
-    strip.setPixelColor(bouncePos, ledColorScaled());
+    bool isDefault = (modeR == 255 && modeG == 255 && modeB == 255);
+    if (isDefault) {
+      strip.setPixelColor(bouncePos, strip.Color(0, 180, 255)); // cyan default
+    } else {
+      strip.setPixelColor(bouncePos, strip.Color(modeR, modeG, modeB));
+    }
     strip.show();
     bouncePos = (bouncePos + 1) % NUM_LEDS;
   } else if (ledMode == "colorwave") {
@@ -673,10 +706,16 @@ void handleLedAnimation() {
     lastLedStep = millis();
     colorwavePhase += 0.06;
 
+    const uint8_t aR = 243, aG = 237, aB = 255;
+    const uint8_t bR = 255, bG = 0,   bB = 0;
+
     for (int i = 0; i < NUM_LEDS; i++) {
       float wave = (sinf(i * 0.35f + colorwavePhase) + 1.0f) / 2.0f;
-      uint8_t intensity = (uint8_t)(35 + wave * 220);
-      strip.setPixelColor(i, ledColorScaled(intensity));
+      float blend = (sinf(i * 0.18f + colorwavePhase * 0.6f) + 1.0f) / 2.0f;
+      uint8_t r = (uint8_t)((aR * (1.0f - blend) + bR * blend) * wave);
+      uint8_t g = (uint8_t)((aG * (1.0f - blend) + bG * blend) * wave);
+      uint8_t b = (uint8_t)((aB * (1.0f - blend) + bB * blend) * wave);
+      strip.setPixelColor(i, strip.Color(r, g, b));
     }
     strip.show();
   }
@@ -703,6 +742,9 @@ String buildStatusJson(bool includeSecret) {
   char customHex[7];
   snprintf(customHex, sizeof(customHex), "%02X%02X%02X", customR, customG, customB);
   doc["customColor"] = customHex;
+  char modeHex[7];
+  snprintf(modeHex, sizeof(modeHex), "%02X%02X%02X", modeR, modeG, modeB);
+  doc["modeColor"] = modeHex;
   doc["fanRpm"] = fanRpm;
   doc["peltier"] = peltierOn;
   doc["netMode"] = netMode;
@@ -905,6 +947,17 @@ void processCommandJson(const String& cmd) {
     if (hex.length() == 6) {
       long val = strtol(hex.c_str(), nullptr, 16);
       setCustomColor((val >> 16) & 0xFF, (val >> 8) & 0xFF, val & 0xFF);
+      triggerCmdBlink();
+    }
+  }
+  // Warna untuk mode animasi (knight/fire/chase/colorwave)
+  if (doc["modeColor"].is<const char*>()) {
+    String hex = doc["modeColor"].as<String>();
+    hex.trim();
+    if (hex.startsWith("#")) hex = hex.substring(1);
+    if (hex.length() == 6) {
+      long val = strtol(hex.c_str(), nullptr, 16);
+      setModeColor((val >> 16) & 0xFF, (val >> 8) & 0xFF, val & 0xFF);
       triggerCmdBlink();
     }
   }
@@ -1240,6 +1293,7 @@ void handleSetCmd() {
   if (server.hasArg("ledSpeed")) doc["ledSpeed"] = server.arg("ledSpeed").toInt();
   if (server.hasArg("ledBrightness")) doc["ledBrightness"] = server.arg("ledBrightness").toInt();
   if (server.hasArg("customColor")) doc["customColor"] = server.arg("customColor");
+  if (server.hasArg("modeColor")) doc["modeColor"] = server.arg("modeColor");
   if (server.hasArg("peltier")) doc["peltier"] = (server.arg("peltier") == "1" || server.arg("peltier") == "true");
   if (server.hasArg("action")) doc["action"] = server.arg("action");
   String cmd;
@@ -1420,6 +1474,10 @@ void setup() {
   customR = (savedCustomColor >> 16) & 0xFF;
   customG = (savedCustomColor >> 8) & 0xFF;
   customB = savedCustomColor & 0xFF;
+  uint32_t savedModeColor = prefs.getUInt("modeColor", 0xFFFFFFu);
+  modeR = (savedModeColor >> 16) & 0xFF;
+  modeG = (savedModeColor >> 8) & 0xFF;
+  modeB = savedModeColor & 0xFF;
 
   pinMode(PIN_ONBOARD_LED, OUTPUT);
   onboardLedWrite(false);
