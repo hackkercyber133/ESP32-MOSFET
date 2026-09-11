@@ -103,8 +103,8 @@ class _DeviceSpecsPageState extends State<DeviceSpecsPage> {
     final avgMs = totalMs / _recentFrameDurations.length;
     final fps = avgMs > 0 ? (1000.0 / avgMs) : _refreshRateHz;
     final jankFreePct = 100.0 - (jankFrames / _recentFrameDurations.length * 100.0);
-    _fpsActual = fps.clamp(0, 240);
-    _jankFreePercent = jankFreePct.clamp(0, 100);
+    _fpsActual = fps.clamp(0, 240).toDouble();
+    _jankFreePercent = jankFreePct.clamp(0, 100).toDouble();
   }
 
   Future<void> _refreshLiveMetrics() async {
@@ -288,7 +288,7 @@ class _DeviceSpecsPageState extends State<DeviceSpecsPage> {
                   borderColor: widget.accentColor,
                   borderWidth: 2.5,
                   entryRadius: 4,
-                  dataEntries: entries.map((v) => RadarEntry(value: v)).toList(),
+                  dataEntries: entries.map((v) => RadarEntry(value: v.toDouble())).toList(),
                 ),
               ],
             ),

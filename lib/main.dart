@@ -185,11 +185,11 @@ class _SplashScreenState extends State<SplashScreen> with TickerProviderStateMix
       body: AnimatedBuilder(
         animation: Listenable.merge([_mainCtrl, _loopCtrl]),
         builder: (context, _) {
-          final t = _mainCtrl.value.clamp(0.0, 1.0);
+          final t = _mainCtrl.value.clamp(0.0, 1.0).toDouble();
           final loop = _loopCtrl.value;
 
           double stage(double begin, double end, {Curve curve = Curves.linear}) {
-            return curve.transform(Interval(begin, end, curve: Curves.linear).transform(t)).clamp(0.0, 1.0);
+            return curve.transform(Interval(begin, end, curve: Curves.linear).transform(t)).clamp(0.0, 1.0).toDouble();
           }
 
           final ringIntro = stage(0.0, 0.45, curve: Curves.easeOutExpo);
@@ -230,7 +230,7 @@ class _SplashScreenState extends State<SplashScreen> with TickerProviderStateMix
                 child: Transform.rotate(
                   angle: loop * 2 * pi,
                   child: Opacity(
-                    opacity: (0.28 * ringIntro).clamp(0.0, 0.28),
+                    opacity: (0.28 * ringIntro).clamp(0.0, 0.28).toDouble(),
                     child: CustomPaint(
                       painter: _HexPainter(color: neon),
                       size: const Size(210, 210),
@@ -280,9 +280,9 @@ class _SplashScreenState extends State<SplashScreen> with TickerProviderStateMix
                             return LinearGradient(
                               colors: const [Colors.white, Color(0xFFBFF7FF), Colors.white],
                               stops: [
-                                (sweep - 0.25).clamp(0.0, 1.0),
-                                sweep.clamp(0.0, 1.0),
-                                (sweep + 0.25).clamp(0.0, 1.0),
+                                (sweep - 0.25).clamp(0.0, 1.0).toDouble(),
+                                sweep.clamp(0.0, 1.0).toDouble(),
+                                (sweep + 0.25).clamp(0.0, 1.0).toDouble(),
                               ],
                             ).createShader(bounds);
                           },
@@ -367,7 +367,7 @@ class _SplashScreenState extends State<SplashScreen> with TickerProviderStateMix
               if (flashT > 0)
                 IgnorePointer(
                   child: Opacity(
-                    opacity: (flashT * 0.85).clamp(0.0, 0.85),
+                    opacity: (flashT * 0.85).clamp(0.0, 0.85).toDouble(),
                     child: Container(color: Colors.white),
                   ),
                 ),
@@ -392,7 +392,7 @@ class _ParticlePainter extends CustomPainter {
       final progress = (loop + p.phase) % 1.0;
       final y = size.height * (1 - progress);
       final x = p.x * size.width + sin((progress + p.phase) * 2 * pi) * p.drift;
-      final opacity = sin(progress * pi).clamp(0.0, 1.0);
+      final opacity = sin(progress * pi).clamp(0.0, 1.0).toDouble();
       paint.color = color.withOpacity(0.55 * opacity);
       canvas.drawCircle(Offset(x, y), p.size, paint);
     }
@@ -415,7 +415,7 @@ class _RingPainter extends CustomPainter {
     for (int i = 0; i < 3; i++) {
       final progress = (loopValue + i / 3) % 1.0;
       final radius = maxRadius * progress * intro;
-      final opacity = ((1 - progress) * 0.5 * intro).clamp(0.0, 0.5);
+      final opacity = ((1 - progress) * 0.5 * intro).clamp(0.0, 0.5).toDouble();
       final paint = Paint()
         ..style = PaintingStyle.stroke
         ..strokeWidth = 1.6
@@ -482,7 +482,7 @@ class _ColorWheelState extends State<_ColorWheel> {
     final clampedDist = dist > radius ? radius : dist;
     double angle = atan2(dy, dx) * 180 / pi;
     if (angle < 0) angle += 360;
-    final sat = radius == 0 ? 0.0 : (clampedDist / radius).clamp(0.0, 1.0);
+    final sat = radius == 0 ? 0.0 : (clampedDist / radius).clamp(0.0, 1.0).toDouble();
     final newColor = HSVColor.fromAHSV(1.0, angle, sat, 1.0).toColor();
     widget.onChanged(newColor);
   }
@@ -1412,7 +1412,7 @@ class _ControllerPageState extends State<ControllerPage> {
       _showSnack("⚠️ Pilih atau tambah cooler dulu");
       return;
     }
-    percent = percent.clamp(0, 100);
+    percent = percent.clamp(0, 100).toInt();
     if (connectionMode == "WiFi") {
       sendFanSpeedLocalWifi(percent);
     } else {
@@ -1463,7 +1463,7 @@ class _ControllerPageState extends State<ControllerPage> {
       _showSnack("⚠️ Pilih atau tambah cooler dulu");
       return;
     }
-    percent = percent.clamp(1, 100);
+    percent = percent.clamp(1, 100).toInt();
     if (connectionMode == "WiFi") {
       sendLedSpeedLocalWifi(percent);
     } else {
@@ -1514,7 +1514,7 @@ class _ControllerPageState extends State<ControllerPage> {
       _showSnack("⚠️ Pilih atau tambah cooler dulu");
       return;
     }
-    percent = percent.clamp(0, 100);
+    percent = percent.clamp(0, 100).toInt();
     if (connectionMode == "WiFi") {
       sendLedBrightnessLocalWifi(percent);
     } else {
