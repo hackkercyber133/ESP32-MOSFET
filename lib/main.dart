@@ -2942,7 +2942,14 @@ class _ControllerPageState extends State<ControllerPage> {
   Widget _rgbButton(bool isDark, String label, String mode, IconData icon) {
     final selected = ledMode == mode;
     return Expanded(child: _TapScale(
-      onTap: () => sendLed(mode),
+      onTap: () {
+        // Ubah tampilan mode LED langsung begitu ditap (termasuk buka panel
+        // color wheel untuk CUSTOM), tidak nunggu konfirmasi balik dari
+        // ESP32 dulu - kalau device kebetulan lagi offline, panelnya tetap
+        // kebuka dan baru kekirim beneran begitu device online lagi.
+        setState(() => ledMode = mode);
+        sendLed(mode);
+      },
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 220),
         curve: Curves.easeOutCubic,
