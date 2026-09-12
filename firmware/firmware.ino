@@ -14,6 +14,7 @@
 #include <CH224X_I2C.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
+#include "FluxGarage_RoboEyes.h"
 
 Preferences prefs;
 
@@ -33,16 +34,27 @@ String computeDeviceId() {
 #define PG_PIN       7
 
 #define OLED_ADDR   0x3C
-#define OLED_WIDTH  64
+#define OLED_WIDTH  128
 #define OLED_HEIGHT 32
 Adafruit_SSD1306 oled(OLED_WIDTH, OLED_HEIGHT, &Wire, -1);
 bool oledReady = false;
 
+RoboEyes<Adafruit_SSD1306> roboEyes(oled);
+
 int oledSession = 0;
 unsigned long lastOledSessionSwitch = 0;
-unsigned long lastOledDraw = 0;
-const unsigned long OLED_SESSION_MS[3] = {15000, 3000, 3000};
-const unsigned long OLED_EYES_FPS_MS = 60;
+
+const unsigned long OLED_SESSION_MS[6] = {15000, 3000, 3000, 3000, 3000, 3000};
+
+int oledEyeMood = -1;
+
+String oledCustomText = "";
+int oledMarqueeX = 0;
+unsigned long lastOledMarqueeStep = 0;
+const unsigned long OLED_MARQUEE_FPS_MS = 30;
+const int OLED_MARQUEE_SPEED_PX = 2;
+
+#define OLED_TEXT_MAX_LEN 60
 
 int fanSpeedPercent = 100;
 volatile uint32_t fanTachPulseCount = 0;
@@ -67,9 +79,6 @@ unsigned long ledStepDelay(unsigned long baseMs) {
   return scaled;
 }
 
-// =========================
-// GLOBAL LED COLOR / BRIGHTNESS
-// =========================
 #define PIN_LED_DATA 4
 #define NUM_LEDS 30
 Adafruit_NeoPixel strip(NUM_LEDS, PIN_LED_DATA, NEO_GRB + NEO_KHZ800);
@@ -85,8 +94,6 @@ float colorwavePhase = 0;
 uint8_t customR = 255, customG = 255, customB = 255;
 int ledBrightnessPercent = 31;
 
-// Setiap efek memanggil fungsi ini sehingga warna pilihan pengguna
-// menjadi warna GLOBAL untuk semua mode LED.
 uint32_t ledColorScaled(uint8_t intensity) {
   return strip.Color(
     ((uint16_t)customR * intensity) / 255,
@@ -109,8 +116,7 @@ void setLedBrightness(int percent) {
 }
 
 void setCustomColor(uint8_t r, uint8_t g, uint8_t b) {
-  // Warna ini GLOBAL: tidak mengubah mode LED.
-  // Efek animasi yang sedang berjalan akan memakai warna baru pada frame berikutnya.
+
   customR = r;
   customG = g;
   customB = b;
@@ -120,7 +126,6 @@ void setCustomColor(uint8_t r, uint8_t g, uint8_t b) {
     prefs.putUInt("customColor", packed);
   }
 
-  // Mode statis perlu di-render ulang agar warna berubah langsung.
   if (ledMode == "static" || ledMode == "custom") {
     for (int i = 0; i < NUM_LEDS; i++) {
       strip.setPixelColor(i, ledColorScaled(255));
@@ -231,124 +236,138 @@ void updatePdStatus() {
   }
 }
 
-void drawOledVoltWatt() {
+void drawOledStatusScreen(const char* label, const String& value, uint8_t valueSize) {
   oled.clearDisplay();
   oled.setTextColor(SSD1306_WHITE);
 
+  int16_t x1, y1; uint16_t w, h;
+
   oled.setTextSize(1);
-  oled.setCursor(2, 2);
-  oled.print("VOLT ");
-  oled.print(currentSetVoltage, 0);
-  oled.print("V");
+  oled.getTextBounds(label, 0, 0, &x1, &y1, &w, &h);
+  oled.setCursor(max(0, (OLED_WIDTH - (int)w) / 2), 2);
+  oled.print(label);
 
-  oled.drawFastHLine(0, 15, OLED_WIDTH, SSD1306_WHITE);
+  oled.drawFastHLine(0, 13, OLED_WIDTH, SSD1306_WHITE);
 
-  oled.setCursor(2, 20);
-  oled.print("WATT ");
-  oled.print(chargerwatt, 1);
+  oled.setTextSize(valueSize);
+  oled.getTextBounds(value, 0, 0, &x1, &y1, &w, &h);
+  oled.setCursor(max(0, (OLED_WIDTH - (int)w) / 2), valueSize >= 2 ? 17 : 20);
+  oled.print(value);
 
   oled.display();
 }
 
-void drawOledFanPd() {
+String oledRgbModeLabel(const String& mode) {
+  if (mode == "off") return "OFF";
+  if (mode == "static") return "STATIC";
+  if (mode == "running") return "RUN";
+  if (mode == "disco") return "DISCO";
+  if (mode == "bounce") return "BOUNCE";
+  if (mode == "knight") return "KNIGHT";
+  if (mode == "fire") return "FIRE";
+  if (mode == "chase") return "CHASE";
+  if (mode == "colorwave") return "WAVE";
+  if (mode == "custom") return "CUSTOM";
+  return mode;
+}
+
+String oledUptimeShort() {
+  unsigned long runtime = millis() - startMillis;
+  long s = runtime / 1000, m = s / 60, h = m / 60;
+  char buf[20];
+  snprintf(buf, sizeof(buf), "%ld:%02ld:%02ld", h, m % 60, s % 60);
+  return String(buf);
+}
+
+void drawOledRequest() {
+  drawOledStatusScreen("REQUEST", String(currentSetVoltage, 0) + "V", 2);
+}
+
+void drawOledPd() {
+  String v = !ch224aReady ? "OFF" : (pgood ? "GOOD" : "WAIT");
+  drawOledStatusScreen("PD", v, 2);
+}
+
+void drawOledUptime() {
+  drawOledStatusScreen("UPTIME", oledUptimeShort(), 1);
+}
+
+void drawOledWatt() {
+  drawOledStatusScreen("CHARGER", String(chargerwatt, 1) + "W", 2);
+}
+
+void drawOledMode() {
+  drawOledStatusScreen("RGB MODE", oledRgbModeLabel(ledMode), 1);
+}
+
+void setOledCustomText(String text) {
+  text.trim();
+  if ((int)text.length() > OLED_TEXT_MAX_LEN) text = text.substring(0, OLED_TEXT_MAX_LEN);
+  oledCustomText = text;
+  if (prefs.getString("oledText", "") != oledCustomText) {
+    prefs.putString("oledText", oledCustomText);
+  }
+  oledMarqueeX = OLED_WIDTH;
+}
+
+void drawOledCustomText() {
   oled.clearDisplay();
   oled.setTextColor(SSD1306_WHITE);
+  oled.setTextSize(2);
 
-  oled.setTextSize(1);
-  oled.setCursor(2, 2);
-  oled.print("FAN ");
-  oled.print(fanRpm);
-  oled.print("rpm");
+  int16_t x1, y1; uint16_t w, h;
+  oled.getTextBounds(oledCustomText, 0, 0, &x1, &y1, &w, &h);
 
-  oled.drawFastHLine(0, 15, OLED_WIDTH, SSD1306_WHITE);
-
-  oled.setCursor(2, 20);
-  oled.print("PD ");
-  oled.print(ch224aReady ? (pgood ? "OK" : "WAIT") : "OFF");
-
+  oled.setCursor(oledMarqueeX, (OLED_HEIGHT - (int)h) / 2);
+  oled.print(oledCustomText);
   oled.display();
+
+  oledMarqueeX -= OLED_MARQUEE_SPEED_PX;
+  if (oledMarqueeX < -(int)w) oledMarqueeX = OLED_WIDTH;
 }
 
-int robotBlinkHeight(unsigned long now) {
-  unsigned long bt = now % 3000;
-  int h;
-  if (bt < 2850) h = 20;
-  else if (bt < 2930) h = map(bt, 2850, 2930, 20, 2);
-  else if (bt < 2970) h = 2;
-  else h = map(bt, 2970, 3000, 2, 20);
-  return constrain(h, 2, 20);
-}
+void updateOledRobotEyes(unsigned long sesiElapsed) {
+  int mood;
+  if (sesiElapsed < 7000) mood = 0;
+  else if (sesiElapsed < 9500) mood = 1;
+  else if (sesiElapsed < 12000) mood = 2;
+  else mood = 3;
 
-void drawEyesNormal(int offsetX, int h) {
-  int y = 16 - h / 2;
-  oled.fillRoundRect(8 + offsetX, y, 14, h, 3, SSD1306_WHITE);
-  oled.fillRoundRect(42 + offsetX, y, 14, h, 3, SSD1306_WHITE);
-}
-
-void drawEyesSenyum() {
-  for (int dy = 0; dy < 2; dy++) {
-    oled.drawLine(9, 16 + dy, 16, 8 + dy, SSD1306_WHITE);
-    oled.drawLine(16, 8 + dy, 23, 16 + dy, SSD1306_WHITE);
-    oled.drawLine(41, 16 + dy, 48, 8 + dy, SSD1306_WHITE);
-    oled.drawLine(48, 8 + dy, 55, 16 + dy, SSD1306_WHITE);
-  }
-  oled.drawLine(22, 25, 28, 30, SSD1306_WHITE);
-  oled.drawLine(28, 30, 36, 30, SSD1306_WHITE);
-  oled.drawLine(36, 30, 42, 25, SSD1306_WHITE);
-}
-
-void drawEyesMarah() {
-  for (int dy = 0; dy < 2; dy++) {
-    oled.drawLine(5, 4 + dy, 20, 11 + dy, SSD1306_WHITE);
-    oled.drawLine(59, 4 + dy, 44, 11 + dy, SSD1306_WHITE);
-  }
-  oled.fillRoundRect(8, 15, 14, 6, 2, SSD1306_WHITE);
-  oled.fillRoundRect(42, 15, 14, 6, 2, SSD1306_WHITE);
-  oled.drawFastHLine(24, 28, 16, SSD1306_WHITE);
-}
-
-void drawEyesCemburut() {
-  oled.drawFastHLine(8, 9, 14, SSD1306_WHITE);
-  oled.drawFastHLine(42, 9, 14, SSD1306_WHITE);
-  oled.fillRoundRect(8, 12, 14, 8, 2, SSD1306_WHITE);
-  oled.fillRoundRect(42, 12, 14, 8, 2, SSD1306_WHITE);
-  oled.fillRoundRect(29, 26, 6, 3, 1, SSD1306_WHITE);
-}
-
-void drawOledRobotEyes(unsigned long sesiElapsed) {
-  oled.clearDisplay();
-  unsigned long now = millis();
-
-  if (sesiElapsed < 7000) {
-    int offsetX = 0;
-    if (sesiElapsed >= 3000 && sesiElapsed < 5000) offsetX = -6;
-    else if (sesiElapsed >= 5000) offsetX = 6;
-    drawEyesNormal(offsetX, robotBlinkHeight(now));
-  } else if (sesiElapsed < 9500) {
-    drawEyesSenyum();
-  } else if (sesiElapsed < 12000) {
-    drawEyesMarah();
-  } else {
-    drawEyesCemburut();
+  if (mood != oledEyeMood) {
+    oledEyeMood = mood;
+    if (mood == 0) { roboEyes.setMood(DEFAULT); }
+    else if (mood == 1) { roboEyes.setMood(HAPPY); roboEyes.anim_laugh(); }
+    else if (mood == 2) { roboEyes.setMood(ANGRY); }
+    else { roboEyes.setMood(TIRED); }
   }
 
-  oled.display();
+  roboEyes.update();
 }
 
 void updateOled() {
   if (!oledReady) return;
   unsigned long now = millis();
 
-  if (now - lastOledSessionSwitch >= OLED_SESSION_MS[oledSession]) {
-    lastOledSessionSwitch = now;
-    oledSession = (oledSession + 1) % 3;
-    if (oledSession == 1) drawOledVoltWatt();
-    else if (oledSession == 2) drawOledFanPd();
+  if (oledCustomText.length() > 0) {
+    if (now - lastOledMarqueeStep >= OLED_MARQUEE_FPS_MS) {
+      lastOledMarqueeStep = now;
+      drawOledCustomText();
+    }
+    return;
   }
 
-  if (oledSession == 0 && now - lastOledDraw >= OLED_EYES_FPS_MS) {
-    lastOledDraw = now;
-    drawOledRobotEyes(now - lastOledSessionSwitch);
+  if (now - lastOledSessionSwitch >= OLED_SESSION_MS[oledSession]) {
+    lastOledSessionSwitch = now;
+    oledSession = (oledSession + 1) % 6;
+    if (oledSession == 1) drawOledRequest();
+    else if (oledSession == 2) drawOledPd();
+    else if (oledSession == 3) drawOledUptime();
+    else if (oledSession == 4) drawOledWatt();
+    else if (oledSession == 5) drawOledMode();
+  }
+
+  if (oledSession == 0) {
+    updateOledRobotEyes(now - lastOledSessionSwitch);
   }
 }
 
@@ -404,7 +423,6 @@ void scanI2CBus() {
     Serial.println(found);
   }
 }
-
 
 #define PELTIER_PIN 10
 bool peltierOn = false;
@@ -585,7 +603,7 @@ void applyLedMode(String mode) {
     strip.clear();
     strip.show();
   } else if (mode == "static") {
-    // STATIC kembali ke efek default rainbow.
+
     for (int i = 0; i < NUM_LEDS; i++) {
       int hue = (i * 256 / NUM_LEDS) & 255;
       strip.setPixelColor(i, wheelColor(hue));
@@ -614,7 +632,7 @@ void handleLedAnimation() {
   if (ledMode == "running") {
     if (millis() - lastLedStep < ledStepDelay(20)) return;
     lastLedStep = millis();
-    // RUN kembali ke rainbow default. Speed hanya mengatur tempo animasi.
+
     for (int i = 0; i < NUM_LEDS; i++) {
       int hue = ((i * 256 / NUM_LEDS) + rainbowStep) & 255;
       strip.setPixelColor(i, wheelColor(hue));
@@ -625,7 +643,7 @@ void handleLedAnimation() {
   } else if (ledMode == "disco") {
     if (millis() - lastLedStep < ledStepDelay(120)) return;
     lastLedStep = millis();
-    // DISCO kembali ke warna random default.
+
     for (int i = 0; i < NUM_LEDS; i++) {
       strip.setPixelColor(i, strip.Color(random(0, 256), random(0, 256), random(0, 256)));
     }
@@ -633,7 +651,7 @@ void handleLedAnimation() {
   } else if (ledMode == "bounce") {
     if (millis() - lastLedStep < ledStepDelay(30)) return;
     lastLedStep = millis();
-    // BOUNCE kembali ke warna rainbow default. Speed hanya mengatur tempo.
+
     strip.clear();
     const int tailLen = 4;
     for (int t = 0; t < tailLen; t++) {
@@ -720,6 +738,7 @@ String buildStatusJson(bool includeSecret) {
   char customHex[7];
   snprintf(customHex, sizeof(customHex), "%02X%02X%02X", customR, customG, customB);
   doc["customColor"] = customHex;
+  doc["oledText"] = oledCustomText;
   doc["fanRpm"] = fanRpm;
   doc["peltier"] = peltierOn;
   doc["netMode"] = netMode;
@@ -924,6 +943,11 @@ void processCommandJson(const String& cmd) {
       setCustomColor((val >> 16) & 0xFF, (val >> 8) & 0xFF, val & 0xFF);
       triggerCmdBlink();
     }
+  }
+  if (doc["oledText"].is<const char*>()) {
+
+    setOledCustomText(doc["oledText"].as<String>());
+    triggerCmdBlink();
   }
   if (doc["fanSpeed"].is<int>()) {
     setFanSpeed(doc["fanSpeed"]);
@@ -1257,6 +1281,7 @@ void handleSetCmd() {
   if (server.hasArg("ledSpeed")) doc["ledSpeed"] = server.arg("ledSpeed").toInt();
   if (server.hasArg("ledBrightness")) doc["ledBrightness"] = server.arg("ledBrightness").toInt();
   if (server.hasArg("customColor")) doc["customColor"] = server.arg("customColor");
+  if (server.hasArg("oledText")) doc["oledText"] = server.arg("oledText");
   if (server.hasArg("peltier")) doc["peltier"] = (server.arg("peltier") == "1" || server.arg("peltier") == "true");
   if (server.hasArg("action")) doc["action"] = server.arg("action");
   String cmd;
@@ -1469,9 +1494,22 @@ void setup() {
   if (!oledReady) {
     Serial.println("OLED SSD1315 tidak terdeteksi di 0x3C, melanjutkan tanpa display.");
   } else {
+    roboEyes.begin(OLED_WIDTH, OLED_HEIGHT, 60);
+
+    roboEyes.setWidth(34, 34);
+    roboEyes.setHeight(26, 26);
+    roboEyes.setBorderradius(6, 6);
+    roboEyes.setSpacebetween(10);
+    roboEyes.setAutoblinker(ON, 3, 2);
+    roboEyes.setIdleMode(ON, 2, 2);
+    roboEyes.setCuriosity(ON);
+    roboEyes.setMood(DEFAULT);
+
+    oledCustomText = prefs.getString("oledText", "");
+    oledMarqueeX = OLED_WIDTH;
     oledSession = 0;
+    oledEyeMood = -1;
     lastOledSessionSwitch = millis();
-    drawOledRobotEyes(0);
   }
 
   registerHttpHandlers();
