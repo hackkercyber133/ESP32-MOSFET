@@ -652,6 +652,9 @@ class _ControllerPageState extends State<ControllerPage> {
   bool ch224aReady = false;
   bool powerGood = false;
   String pdStatus = "CH224A_NOT_READY";
+  String oledText = ""; // teks custom yang lagi berjalan di OLED, dari field "oledText" firmware ("" = mode otomatis)
+  final TextEditingController _oledTextController = TextEditingController();
+  final FocusNode _oledTextFocus = FocusNode();
 
   // ===== JADWAL OTOMATIS & DETEKSI OFFLINE =====
   List<ScheduleRule> _schedules = [];
@@ -673,6 +676,8 @@ class _ControllerPageState extends State<ControllerPage> {
     _offlineCheckTimer?.cancel();
     _wifiPollTimer?.cancel();
     _udpDiscoverySocket?.close();
+    _oledTextController.dispose();
+    _oledTextFocus.dispose();
     super.dispose();
   }
 
@@ -1020,6 +1025,14 @@ class _ControllerPageState extends State<ControllerPage> {
     ledMode = data['ledMode'] ?? ledMode;
     uptime = data['uptime'] ?? uptime;
     if (ledMode != "off") lastLedEffect = ledMode;
+
+    final rawOledText = data['oledText'];
+    if (rawOledText is String && rawOledText != oledText) {
+      oledText = rawOledText;
+      // Jangan timpa yang lagi diketik user - sinkronkan cuma kalau field
+      // OLED-nya lagi gak difokus/diketik.
+      if (!_oledTextFocus.hasFocus) _oledTextController.text = oledText;
+    }
 
     final rawAuthPass = data['httpAuthPass'];
     if (rawAuthPass is String && rawAuthPass.isNotEmpty && activeCooler != null &&
@@ -1634,6 +1647,55 @@ class _ControllerPageState extends State<ControllerPage> {
       return;
     }
     final ok = await _writeControlBLE({"customColor": hex});
+    if (!ok) {
+      _showSnack("❌ Gagal mengirim perintah ke perangkat");
+    }
+  }
+
+  void sendOledText(String text) {
+    if (activeCooler == null) {
+      _showSnack("⚠️ Pilih atau tambah cooler dulu");
+      return;
+    }
+    if (connectionMode == "WiFi") {
+      sendOledTextLocalWifi(text);
+    } else {
+      sendOledTextBLE(text);
+    }
+    setState(() => oledText = text);
+  }
+
+  void sendOledTextLocalWifi(String text) async {
+    if (_wifiIp == null) {
+      _showSnack("⚠️ Belum menemukan ESP32 di jaringan, tunggu sebentar / cek WiFi HP");
+      return;
+    }
+    try {
+      final response = await http
+          .post(Uri.http(_wifiIp!, "/set", {"oledText": text}), headers: esp32AuthHeaders(activeCooler))
+          .timeout(Duration(seconds: 3));
+      if (response.statusCode == 200) {
+        try {
+          final data = jsonDecode(response.body);
+          if (data is Map<String, dynamic>) {
+            setState(() => _applyDeviceStatus(data));
+          }
+        } catch (_) {}
+      } else {
+        _showSnack("❌ ESP32 menolak teks OLED");
+      }
+    } catch (e) {
+      _showSnack("⚠️ Gagal kirim perintah, cek koneksi WiFi");
+    }
+  }
+
+  void sendOledTextBLE(String text) async {
+    if (!bleConnected || bleDevice == null) {
+      setState(() => status = "🔴 Offline");
+      _showSnack("⚠️ Belum terhubung ke perangkat Bluetooth");
+      return;
+    }
+    final ok = await _writeControlBLE({"oledText": text});
     if (!ok) {
       _showSnack("❌ Gagal mengirim perintah ke perangkat");
     }
@@ -2628,6 +2690,8 @@ class _ControllerPageState extends State<ControllerPage> {
               const SizedBox(height: 12),
               _nexusRgbCard(isDark),
               const SizedBox(height: 12),
+              _nexusOledCard(isDark),
+              const SizedBox(height: 12),
               _nexusQuickMenu(isDark),
               const SizedBox(height: 12),
               _nexusConnectionActions(isDark),
@@ -3055,6 +3119,73 @@ class _ControllerPageState extends State<ControllerPage> {
   Widget _nexusConnectionActions(bool isDark) => Row(children: [
     Expanded(child: OutlinedButton.icon(onPressed: () { if (activeCooler == null) showAddCoolerDialog(); else _connectActiveCooler(); }, icon: Icon(Icons.sync_rounded, color: accentColor), label: Text('REFRESH', style: TextStyle(color: accentColor, fontSize: 10, fontWeight: FontWeight.w900)), style: OutlinedButton.styleFrom(side: BorderSide(color: accentColor.withOpacity(.4)), padding: const EdgeInsets.symmetric(vertical: 14)))),
   ]);
+
+  Widget _nexusOledCard(bool isDark) {
+    final hasCustomText = oledText.isNotEmpty;
+    return _nexusCard(isDark, child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      _nexusSectionTitle(isDark, 'OLED DISPLAY',
+          hasCustomText ? 'Running text lagi aktif di layar' : 'Mode otomatis: status & mata robot'),
+      const SizedBox(height: 12),
+      TextField(
+        controller: _oledTextController,
+        focusNode: _oledTextFocus,
+        maxLength: 60,
+        textCapitalization: TextCapitalization.characters,
+        style: TextStyle(color: AppColors.text(isDark), fontWeight: FontWeight.w700),
+        cursorColor: accentColor,
+        decoration: InputDecoration(
+          isDense: true,
+          counterText: '',
+          hintText: 'Contoh: VLADIMIR PUTIN',
+          hintStyle: TextStyle(color: AppColors.textFaint(isDark)),
+          enabledBorder: UnderlineInputBorder(borderSide: BorderSide(color: AppColors.textFaint(isDark).withOpacity(.3))),
+          focusedBorder: UnderlineInputBorder(borderSide: BorderSide(color: accentColor, width: 2)),
+        ),
+        textInputAction: TextInputAction.done,
+        onSubmitted: (v) => sendOledText(v.trim()),
+      ),
+      const SizedBox(height: 5),
+      Text(
+        'Teks ini tersimpan permanen di ESP32 dan tetap jalan walau app tidak terhubung. Kosongkan lalu tekan HAPUS untuk balik ke tampilan status otomatis.',
+        style: TextStyle(color: AppColors.textFaint(isDark), fontSize: 8, height: 1.4),
+      ),
+      const SizedBox(height: 12),
+      Row(children: [
+        Expanded(child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: () => sendOledText(_oledTextController.text.trim()),
+          child: Container(
+            padding: const EdgeInsets.symmetric(vertical: 11),
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: accentColor.withOpacity(.16),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: accentColor),
+            ),
+            child: Text('TERAPKAN', style: TextStyle(color: accentColor, fontSize: 10, fontWeight: FontWeight.w900, letterSpacing: 1)),
+          ),
+        )),
+        const SizedBox(width: 8),
+        Expanded(child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: () {
+            _oledTextController.clear();
+            sendOledText('');
+          },
+          child: Container(
+            padding: const EdgeInsets.symmetric(vertical: 11),
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: AppColors.card(isDark),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: AppColors.textFaint(isDark).withOpacity(.25)),
+            ),
+            child: Text('HAPUS', style: TextStyle(color: AppColors.textFaint(isDark), fontSize: 10, fontWeight: FontWeight.w900, letterSpacing: 1)),
+          ),
+        )),
+      ]),
+    ]));
+  }
 
   Widget _nexusSectionTitle(bool isDark, String title, String subtitle) => Row(children: [
     Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
