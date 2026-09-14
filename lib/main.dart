@@ -1964,11 +1964,6 @@ class _ControllerPageState extends State<ControllerPage> {
                 Text("Nama: M.ADY AFRIANSYAH"),
                 Text("Support: ChoDox & FerN"),
                 Divider(color: Colors.white24, height: 20),
-                Text("Tujuan Aplikasi", style: TextStyle(color: accentColor, fontWeight: FontWeight.bold)),
-                SizedBox(height: 4),
-                Text(
-                    "Aplikasi ini dibuat hanya untuk tujuan edukasi/pembelajaran, mengenai cara kerja fan cooler apabila dikontrol menggunakan aplikasi."),
-                Divider(color: Colors.white24, height: 20),
                 Text("Cara Penggunaan (Dari Awal sampai Selesai)",
                     style: TextStyle(color: accentColor, fontWeight: FontWeight.bold)),
                 SizedBox(height: 6),
@@ -2019,10 +2014,6 @@ class _ControllerPageState extends State<ControllerPage> {
                     "• \"Bersihkan Cache Aplikasi\" untuk menghapus data scan Bluetooth sementara.\n"
                     "• \"Bersihkan Cache Modul ESP32\" untuk kirim perintah reset cache ke ESP32.\n"
                     "• Bisa menambahkan & berpindah antar beberapa cooler lewat menu ☰ → \"Cooler Saya\"."),
-                Divider(color: Colors.white24, height: 20),
-                Text("Status", style: TextStyle(color: accentColor, fontWeight: FontWeight.bold)),
-                SizedBox(height: 4),
-                Text("APLIKASI INI FREE DAN TIDAK UNTUK DI PERJUAL BELIKAN."),
               ],
             ),
           ),
@@ -2692,8 +2683,6 @@ class _ControllerPageState extends State<ControllerPage> {
               const SizedBox(height: 12),
               _nexusOledCard(isDark),
               const SizedBox(height: 12),
-              _nexusQuickMenu(isDark),
-              const SizedBox(height: 12),
               _nexusConnectionActions(isDark),
               const SizedBox(height: 20),
               Center(child: Text('ESP32-C3 MINI • PD3.1 / QC3.0 • LOCAL CONTROL', style: TextStyle(color: AppColors.textFaint(isDark), fontSize: 8, letterSpacing: 1.4))),
@@ -3096,26 +3085,6 @@ class _ControllerPageState extends State<ControllerPage> {
     ));
   }
 
-  Widget _nexusQuickMenu(bool isDark) => Row(children: [
-    _quickTile(isDark, Icons.analytics_rounded, 'DATA', () {
-      if (activeCooler == null) return _showSnack('Pilih device dulu');
-      Navigator.push(context, MaterialPageRoute(builder: (_) => HistoryPage(coolerId: activeCooler!.id, coolerName: activeCooler!.nickname, accentColor: accentColor)));
-    }),
-    const SizedBox(width: 10),
-    _quickTile(isDark, Icons.schedule_rounded, 'SCHEDULE', () {
-      if (activeCooler == null) return _showSnack('Pilih device dulu');
-      Navigator.push(context, MaterialPageRoute(builder: (_) => SchedulePage(coolerId: activeCooler!.id, accentColor: accentColor, availableVoltages: const [5,9,12,15])));
-    }),
-    const SizedBox(width: 10),
-    _quickTile(isDark, Icons.palette_outlined, 'THEME', () => _showThemeSheet()),
-  ]);
-
-  Widget _quickTile(bool isDark, IconData icon, String label, VoidCallback onTap) => Expanded(child: GestureDetector(
-    behavior: HitTestBehavior.opaque,
-    onTap: onTap,
-    child: _nexusCard(isDark, child: Column(children: [Icon(icon, color: accentColor, size: 22), const SizedBox(height: 7), Text(label, style: TextStyle(color: AppColors.text(isDark), fontSize: 8, fontWeight: FontWeight.w900, letterSpacing: 1))])),
-  ));
-
   Widget _nexusConnectionActions(bool isDark) => Row(children: [
     Expanded(child: OutlinedButton.icon(onPressed: () { if (activeCooler == null) showAddCoolerDialog(); else _connectActiveCooler(); }, icon: Icon(Icons.sync_rounded, color: accentColor), label: Text('REFRESH', style: TextStyle(color: accentColor, fontSize: 10, fontWeight: FontWeight.w900)), style: OutlinedButton.styleFrom(side: BorderSide(color: accentColor.withOpacity(.4)), padding: const EdgeInsets.symmetric(vertical: 14)))),
   ]);
@@ -3205,31 +3174,6 @@ class _ControllerPageState extends State<ControllerPage> {
     ),
     child: child,
   );
-
-  void _showThemeSheet() {
-    final isDark = ThemeController.isDark;
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: AppColors.surface(isDark),
-      showDragHandle: true,
-      builder: (_) => StatefulBuilder(builder: (ctx, setSheet) => Padding(
-        padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
-        child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text('THEME LAB', style: TextStyle(color: AppColors.text(isDark), fontSize: 20, fontWeight: FontWeight.w900)),
-          const SizedBox(height: 8),
-          Text('Pilih tampilan dan accent color', style: TextStyle(color: AppColors.textFaint(isDark), fontSize: 11)),
-          SwitchListTile(contentPadding: EdgeInsets.zero, title: Text('Dark Mode', style: TextStyle(color: AppColors.text(isDark))), value: isDark, activeColor: accentColor, onChanged: (v) async { await ThemeController.setDark(v); if (mounted) setState(() {}); setSheet(() {}); }),
-          const SizedBox(height: 8),
-          Text('ACCENT COLOR', style: TextStyle(color: AppColors.textFaint(isDark), fontSize: 9, letterSpacing: 1.5)),
-          const SizedBox(height: 10),
-          Wrap(spacing: 11, runSpacing: 11, children: colorPalette.map((c) => GestureDetector(
-            onTap: () { setState(() => accentColor = c); _saveAccentColor(c); setSheet(() {}); },
-            child: CircleAvatar(radius: 18, backgroundColor: c, child: accentColor.value == c.value ? const Icon(Icons.check, color: Colors.black, size: 17) : null),
-          )).toList()),
-        ]),
-      )),
-    );
-  }
 }
 
 class _NexusGridPainter extends CustomPainter {
