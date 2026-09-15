@@ -41,10 +41,13 @@ bool oledReady = false;
 
 RoboEyes<Adafruit_SSD1306> roboEyes(oled);
 
+GFXcanvas1 oledLogoCanvas(84, 10);
+
 int oledSession = 0;
 unsigned long lastOledSessionSwitch = 0;
+unsigned long lastOledClockTick = 0;
 
-const unsigned long OLED_SESSION_MS[6] = {15000, 3000, 3000, 3000, 3000, 3000};
+const unsigned long OLED_SESSION_MS[9] = {15000, 3000, 3000, 3000, 3000, 3000, 3000, 3000, 3000};
 
 int oledEyeMood = -1;
 
@@ -52,7 +55,21 @@ String oledCustomText = "";
 int oledMarqueeX = 0;
 unsigned long lastOledMarqueeStep = 0;
 const unsigned long OLED_MARQUEE_FPS_MS = 30;
-const int OLED_MARQUEE_SPEED_PX = 2;
+
+int oledTextSpeedPercent = 50;
+
+void setOledTextSpeed(int percent) {
+  if (percent < 1) percent = 1;
+  if (percent > 100) percent = 100;
+  oledTextSpeedPercent = percent;
+  if (prefs.getInt("oledTextSpeed", -1) != oledTextSpeedPercent) {
+    prefs.putInt("oledTextSpeed", oledTextSpeedPercent);
+  }
+}
+
+int oledMarqueeStepPx() {
+  return map(oledTextSpeedPercent, 1, 100, 1, 6);
+}
 
 #define OLED_TEXT_MAX_LEN 60
 
@@ -300,6 +317,30 @@ void drawOledMode() {
   drawOledStatusScreen("RGB MODE", oledRgbModeLabel(ledMode), 1);
 }
 
+void drawOledPeltier() {
+  drawOledStatusScreen("PELTIER", peltierOn ? "ON" : "OFF", 2);
+}
+
+void drawOledKoneksi() {
+  String mode = (netMode == "wifi") ? "WIFI" : "BLE";
+  String v = mode + " " + (isAppConnected() ? "OK" : "OFF");
+  drawOledStatusScreen("KONEKSI", v, 1);
+}
+
+String oledClockString() {
+  time_t now = time(nullptr);
+  if (now < 1700000000) return "--:--:--";
+  struct tm t;
+  localtime_r(&now, &t);
+  char buf[12];
+  snprintf(buf, sizeof(buf), "%02d:%02d:%02d", t.tm_hour, t.tm_min, t.tm_sec);
+  return String(buf);
+}
+
+void drawOledClock() {
+  drawOledStatusScreen("JAM", oledClockString(), 2);
+}
+
 void setOledCustomText(String text) {
   text.trim();
   if ((int)text.length() > OLED_TEXT_MAX_LEN) text = text.substring(0, OLED_TEXT_MAX_LEN);
@@ -322,8 +363,62 @@ void drawOledCustomText() {
   oled.print(oledCustomText);
   oled.display();
 
-  oledMarqueeX -= OLED_MARQUEE_SPEED_PX;
+  oledMarqueeX -= oledMarqueeStepPx();
   if (oledMarqueeX < -(int)w) oledMarqueeX = OLED_WIDTH;
+}
+
+void playOledBootAnimation() {
+  oledLogoCanvas.fillScreen(0);
+  oledLogoCanvas.setTextColor(1);
+  oledLogoCanvas.setTextSize(1);
+  oledLogoCanvas.setCursor(0, 1);
+  oledLogoCanvas.print("VP CONTROLLER");
+
+  const int cw = oledLogoCanvas.width();
+  const int ch = oledLogoCanvas.height();
+  const unsigned long GROW_MS = 900;
+  const unsigned long SETTLE_MS = 400;
+  const unsigned long HOLD_MS = 800;
+  unsigned long start = millis();
+
+  while (true) {
+    unsigned long t = millis() - start;
+    float scale;
+    if (t < GROW_MS) {
+      float p = (float)t / (float)GROW_MS;
+      p = 1.0f - pow(1.0f - p, 3.0f);
+      scale = 0.15f + p * (1.2f - 0.15f);
+    } else if (t < GROW_MS + SETTLE_MS) {
+      float p = (float)(t - GROW_MS) / (float)SETTLE_MS;
+      p = 1.0f - (1.0f - p) * (1.0f - p);
+      scale = 1.2f - p * (1.2f - 1.0f);
+    } else if (t < GROW_MS + SETTLE_MS + HOLD_MS) {
+      scale = 1.0f;
+    } else {
+      break;
+    }
+
+    oled.clearDisplay();
+    int destW = (int)(cw * scale);
+    int destH = (int)(ch * scale);
+    int offX = (OLED_WIDTH - destW) / 2;
+    int offY = (OLED_HEIGHT - destH) / 2;
+    int blockW = max(1, (int)ceil(scale));
+    int blockH = max(1, (int)ceil(scale));
+
+    for (int y = 0; y < ch; y++) {
+      for (int x = 0; x < cw; x++) {
+        if (oledLogoCanvas.getPixel(x, y)) {
+          int dx = offX + (int)(x * scale);
+          int dy = offY + (int)(y * scale);
+          oled.fillRect(dx, dy, blockW, blockH, SSD1306_WHITE);
+        }
+      }
+    }
+    oled.display();
+  }
+
+  delay(150);
 }
 
 void updateOledRobotEyes(unsigned long sesiElapsed) {
@@ -358,12 +453,20 @@ void updateOled() {
 
   if (now - lastOledSessionSwitch >= OLED_SESSION_MS[oledSession]) {
     lastOledSessionSwitch = now;
-    oledSession = (oledSession + 1) % 6;
+    oledSession = (oledSession + 1) % 9;
     if (oledSession == 1) drawOledRequest();
     else if (oledSession == 2) drawOledPd();
     else if (oledSession == 3) drawOledUptime();
     else if (oledSession == 4) drawOledWatt();
     else if (oledSession == 5) drawOledMode();
+    else if (oledSession == 6) drawOledPeltier();
+    else if (oledSession == 7) drawOledKoneksi();
+    else if (oledSession == 8) drawOledClock();
+  }
+
+  if (oledSession == 8 && now - lastOledClockTick >= 500) {
+    lastOledClockTick = now;
+    drawOledClock();
   }
 
   if (oledSession == 0) {
@@ -739,6 +842,7 @@ String buildStatusJson(bool includeSecret) {
   snprintf(customHex, sizeof(customHex), "%02X%02X%02X", customR, customG, customB);
   doc["customColor"] = customHex;
   doc["oledText"] = oledCustomText;
+  doc["oledTextSpeed"] = oledTextSpeedPercent;
   doc["fanRpm"] = fanRpm;
   doc["peltier"] = peltierOn;
   doc["netMode"] = netMode;
@@ -947,6 +1051,10 @@ void processCommandJson(const String& cmd) {
   if (doc["oledText"].is<const char*>()) {
 
     setOledCustomText(doc["oledText"].as<String>());
+    triggerCmdBlink();
+  }
+  if (doc["oledTextSpeed"].is<int>()) {
+    setOledTextSpeed(doc["oledTextSpeed"]);
     triggerCmdBlink();
   }
   if (doc["fanSpeed"].is<int>()) {
@@ -1282,6 +1390,7 @@ void handleSetCmd() {
   if (server.hasArg("ledBrightness")) doc["ledBrightness"] = server.arg("ledBrightness").toInt();
   if (server.hasArg("customColor")) doc["customColor"] = server.arg("customColor");
   if (server.hasArg("oledText")) doc["oledText"] = server.arg("oledText");
+  if (server.hasArg("oledTextSpeed")) doc["oledTextSpeed"] = server.arg("oledTextSpeed").toInt();
   if (server.hasArg("peltier")) doc["peltier"] = (server.arg("peltier") == "1" || server.arg("peltier") == "true");
   if (server.hasArg("action")) doc["action"] = server.arg("action");
   String cmd;
@@ -1494,6 +1603,8 @@ void setup() {
   if (!oledReady) {
     Serial.println("OLED SSD1315 tidak terdeteksi di 0x3C, melanjutkan tanpa display.");
   } else {
+    playOledBootAnimation();
+
     roboEyes.begin(OLED_WIDTH, OLED_HEIGHT, 60);
 
     roboEyes.setWidth(34, 34);
@@ -1506,6 +1617,7 @@ void setup() {
     roboEyes.setMood(DEFAULT);
 
     oledCustomText = prefs.getString("oledText", "");
+    oledTextSpeedPercent = prefs.getInt("oledTextSpeed", 50);
     oledMarqueeX = OLED_WIDTH;
     oledSession = 0;
     oledEyeMood = -1;
