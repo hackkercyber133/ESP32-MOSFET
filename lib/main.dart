@@ -653,6 +653,7 @@ class _ControllerPageState extends State<ControllerPage> {
   bool powerGood = false;
   String pdStatus = "CH224A_NOT_READY";
   String oledText = ""; // teks custom yang lagi berjalan di OLED, dari field "oledText" firmware ("" = mode otomatis)
+  int oledTextSpeed = 50; // kecepatan geser running text OLED (1-100), dari field "oledTextSpeed" firmware
   final TextEditingController _oledTextController = TextEditingController();
   final FocusNode _oledTextFocus = FocusNode();
 
@@ -1033,6 +1034,8 @@ class _ControllerPageState extends State<ControllerPage> {
       // OLED-nya lagi gak difokus/diketik.
       if (!_oledTextFocus.hasFocus) _oledTextController.text = oledText;
     }
+    final rawOledTextSpeed = data['oledTextSpeed'];
+    if (rawOledTextSpeed is num) oledTextSpeed = rawOledTextSpeed.toInt();
 
     final rawAuthPass = data['httpAuthPass'];
     if (rawAuthPass is String && rawAuthPass.isNotEmpty && activeCooler != null &&
@@ -1698,6 +1701,52 @@ class _ControllerPageState extends State<ControllerPage> {
     final ok = await _writeControlBLE({"oledText": text});
     if (!ok) {
       _showSnack("❌ Gagal mengirim perintah ke perangkat");
+    }
+  }
+
+  void sendOledTextSpeed(int percent) {
+    if (connectionMode == "WiFi") {
+      sendOledTextSpeedLocalWifi(percent);
+    } else {
+      sendOledTextSpeedBLE(percent);
+    }
+  }
+
+  void sendOledTextSpeedLocalWifi(int percent) async {
+    if (_wifiIp == null) {
+      _showSnack("⚠️ Belum menemukan ESP32 di jaringan, tunggu sebentar / cek WiFi HP");
+      return;
+    }
+    try {
+      final response = await http
+          .post(Uri.http(_wifiIp!, "/set", {"oledTextSpeed": percent.toString()}), headers: esp32AuthHeaders(activeCooler))
+          .timeout(Duration(seconds: 3));
+      if (response.statusCode == 200) {
+        try {
+          final data = jsonDecode(response.body);
+          if (data is Map<String, dynamic>) {
+            setState(() => _applyDeviceStatus(data));
+          }
+        } catch (_) {}
+      } else {
+        _showSnack("❌ ESP32 menolak kecepatan running text");
+      }
+    } catch (e) {
+      _showSnack("⚠️ Gagal kirim perintah, cek koneksi WiFi");
+    }
+  }
+
+  void sendOledTextSpeedBLE(int percent) async {
+    if (!bleConnected || bleDevice == null) {
+      setState(() => status = "🔴 Offline");
+      _showSnack("⚠️ Belum terhubung ke perangkat Bluetooth");
+      return;
+    }
+    final ok = await _writeControlBLE({"oledTextSpeed": percent});
+    if (!ok) {
+      _showSnack("❌ Gagal mengirim perintah ke perangkat");
+    } else {
+      setState(() => oledTextSpeed = percent);
     }
   }
 
@@ -3153,6 +3202,40 @@ class _ControllerPageState extends State<ControllerPage> {
           ),
         )),
       ]),
+      if (hasCustomText) ...[
+        const SizedBox(height: 14),
+        Divider(color: AppColors.textFaint(isDark).withOpacity(.15), height: 1),
+        const SizedBox(height: 12),
+        Row(children: [
+          Icon(Icons.speed_rounded, color: accentColor, size: 16),
+          const SizedBox(width: 8),
+          Text('KECEPATAN GESER', style: TextStyle(color: AppColors.textFaint(isDark), fontSize: 9, fontWeight: FontWeight.w900, letterSpacing: 1.4)),
+          const Spacer(),
+          Text('$oledTextSpeed%', style: TextStyle(color: accentColor, fontSize: 13, fontWeight: FontWeight.w900)),
+        ]),
+        SliderTheme(
+          data: SliderTheme.of(context).copyWith(
+            activeTrackColor: accentColor,
+            inactiveTrackColor: accentColor.withOpacity(.15),
+            thumbColor: accentColor,
+            overlayColor: accentColor.withOpacity(.15),
+            trackHeight: 5,
+          ),
+          child: Slider(
+            value: oledTextSpeed.toDouble(),
+            min: 1,
+            max: 100,
+            divisions: 33,
+            label: '$oledTextSpeed%',
+            onChanged: (v) => setState(() => oledTextSpeed = v.round()),
+            onChangeEnd: (v) => sendOledTextSpeed(v.round()),
+          ),
+        ),
+        Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+          Text('LAMBAT', style: TextStyle(color: AppColors.textFaint(isDark), fontSize: 8)),
+          Text('CEPAT', style: TextStyle(color: AppColors.textFaint(isDark), fontSize: 8)),
+        ]),
+      ],
     ]));
   }
 
